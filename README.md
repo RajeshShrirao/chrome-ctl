@@ -1,180 +1,198 @@
 # chrome-ctl
 
-> **Ultra-low token browser automation & anti-detection bridge for autonomous AI agents.**  
-> Connects AI agents (Hermes, Claude Code, OpenCode) directly to the user's authenticated Google Chrome browser with zero-detection session reuse and extreme token efficiency.
+**Drive your real, already-signed-in Chrome from the command line.**
 
----
+`chrome-ctl` is a local daemon, CLI, and Manifest V3 extension that let an agent or a shell script control the browser profile you actually use. It reads compact element maps instead of raw HTML, dispatches trusted input through Chrome's debugging protocol, and keeps screenshots, recordings, and macros on your machine.
 
-## ⚡ Highlights
+Because it runs inside your normal Chrome profile, every site sees your existing cookies, sessions, extensions, and fingerprint—no separate automation browser and no fresh login.
 
-* **Zero-Detection Session Reuse:** Runs via a lightweight Manifest V3 Chrome Extension inside the user's primary, authenticated browser profile. Inherits active cookies, Google SSO sessions, and real hardware fingerprints.
-* **Extreme Token Efficiency:** Replaces bloated HTML/DOM dumps (>8,500 tokens) with compact numeric element maps (`snap`: ~95–350 tokens).
-* **Set-of-Mark (SoM) & Vision Compression:** Automatic WebP downscaling (Quality 65, <40KB) and Set-of-Mark numeric badges for Vision LLMs.
-* **Contact Sheet Storyboard Recording:** Compiles 15-second task executions into a single $3 \times 4$ WebP contact sheet (~340 tokens total).
-* **Human-Like Biometrics:** Generates cubic Bézier mouse trajectories, Fitts's Law velocity curves, Gaussian click offsets, and natural typing cadence via trusted CDP events (`event.isTrusted = true`).
-* **Zero-Token Macro Replay Engine:** Learn workflows once, parameterize them with templates (`{{company_name}}`), and replay them locally through the daemon consuming **0 LLM tokens**.
+- [Quick start](#quick-start)
+- [Commands](#commands)
+- [How it works](#how-it-works)
+- [Security model](#security-model)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
 
----
+## Why it exists
 
-## 📚 Architectural & Technical Documentation
+- **Small observations.** `snap` returns only interactive elements with stable numeric IDs, typically a few hundred tokens instead of a full DOM dump.
+- **Real sessions.** Google SSO, corporate portals, and social sites work because the browser is already authenticated.
+- **Trusted input.** Clicks, typing, and scrolling use CDP input events (`event.isTrusted === true`) with human-like timing and paths.
+- **Visual fallback.** Set-of-Mark WebP screenshots reuse snapshot IDs, so a vision model can act on what it sees.
+- **Repeatable workflows.** Record a successful run once, parameterize it, and replay it locally with no model calls.
 
-All foundational and module specifications are organized in the [`docs/`](./docs) directory:
+No tool can guarantee that a site will not detect automation. `chrome-ctl` reduces obvious signals and respects site protections; it does not bypass them.
 
-| Document | Purpose & Scope |
+## Requirements
+
+| Requirement | Notes |
 | :--- | :--- |
-| **[`docs/PRD.md`](./docs/PRD.md)** | Product Requirements Document: Vision, command table, token budget, and agent skill definition. |
-| **[`docs/TECH_SPEC.md`](./docs/TECH_SPEC.md)** | Technical Specification: Architecture topology, Go + MV3 stack rationale, security model, and directory layout. |
-| **[`docs/PROTOCOL.md`](./docs/PROTOCOL.md)** | Wire Protocol Specification: JSON-RPC 2.0 schemas for WebSocket IPC (`ws://127.0.0.1:9229/ws`). |
-| **[`docs/MV3_LIFECYCLE_SPEC.md`](./docs/MV3_LIFECYCLE_SPEC.md)** | Manifest V3 Lifecycle: Offscreen document WebSocket host, service worker awakening, and CDP debugger management. |
-| **[`docs/IMPLEMENTATION_PLAN.md`](./docs/IMPLEMENTATION_PLAN.md)** | Phased Execution Roadmap: 6-phase development checklist with verification tests. |
-| **[`docs/HUMANIZER_SPEC.md`](./docs/HUMANIZER_SPEC.md)** | Humanizer Engine Specification: Cubic Bézier kinematics, Fitts's Law, cadence typing, and anti-bot evasion. |
-| **[`docs/MEDIA_PIPELINE.md`](./docs/MEDIA_PIPELINE.md)** | Media & Vision Pipeline: WebP compression, Set-of-Mark overlays, and $3 \times 4$ storyboard grid generation. |
-| **[`docs/MACRO_SCHEMA.md`](./docs/MACRO_SCHEMA.md)** | Macro & Playbook Specification: Self-learning workflow engine, resilient multi-tier selectors, and replay schema. |
+| macOS or Linux | Release binaries target `darwin-arm64`, `darwin-amd64`, and `linux-amd64`. |
+| Google Chrome 116+ | The extension uses Manifest V3 offscreen documents and `chrome.debugger`. |
+| Go 1.23+ | Only needed to build from source. |
+| Node.js 22+ | Only needed to build or test the extension. |
+| `ffmpeg` (optional) | Required only for WebM export. Storyboard export needs no external tools. |
 
----
+## Quick start
 
-## 🛠️ System Architecture
-
-```
-+-------------------------------------------------------------------------+
-|                           AI Agent (Hermes)                             |
-|       Reads compact stdout (<500 tokens/turn) & executes CLI cmds       |
-+------------------------------------+------------------------------------+
-                                     |
-                                     v  (Subprocess / Bash execution)
-+-------------------------------------------------------------------------+
-|                        `chrome-ctl` CLI Binary                          |
-|   - Stateless command client & local daemon (Go v1.23+)                 |
-|   - Media Optimizer (WebP 65%, Set-of-Mark, 2fps WebM / Grid)          |
-|   - Playbook / Macro Storage (`~/.chrome-ctl/macros/*.json`)            |
-+------------------------------------+------------------------------------+
-                                     |
-                                     v  (Local WebSocket: ws://127.0.0.1:9229)
-+-------------------------------------------------------------------------+
-|                    Chrome Extension (Manifest V3)                       |
-|   - Offscreen Document (Persistent WS client host)                      |
-|   - Background Service Worker (Tab routing, `chrome.debugger` attach)   |
-|   - Content Script (Semantic DOM distillation, Bounding Box overlays)   |
-|   - Humanizer Engine (Bezier mouse curves, cadence typing, scroll jitter)|
-+------------------------------------+------------------------------------+
-                                     |
-                                     v
-+-------------------------------------------------------------------------+
-|                    User's Active Google Chrome                          |
-|   Instagram | LinkedIn | Facebook | Google OAuth SSO | Directory Sites  |
-+-------------------------------------------------------------------------+
-```
-
----
-
-## 🚀 Quick CLI Cheat Sheet
+Build the CLI and extension from a checkout:
 
 ```bash
-# Check status
-chrome-ctl status
+git clone https://github.com/RajeshShrirao/chrome-ctl.git
+cd chrome-ctl
 
-# Tabs & Navigation
-chrome-ctl tabs
-chrome-ctl open "https://news.ycombinator.com"
-
-# Observation
-chrome-ctl snap               # Distill viewport interactive elements
-chrome-ctl snap --forms       # Distill form inputs & submit buttons only
-chrome-ctl read [<id>]        # Extract readable markdown
-
-# Visuals
-chrome-ctl shot --som -o /tmp/view.webp   # Set-of-Mark WebP screenshot
-chrome-ctl rec start --fps 2              # Start low-framerate recording
-chrome-ctl rec stop --grid -o /tmp/seq.webp # Export 3x4 storyboard grid
-
-# Humanized Actions (event.isTrusted = true)
-chrome-ctl click <id> [--snap]
-chrome-ctl type <id> "<text>" [--enter] [--typo-rate 0.02]
-chrome-ctl scroll down 0.8
-chrome-ctl press Enter
-
-# Auth & Macros
-chrome-ctl sso                # Auto-complete Google OAuth account picker
-chrome-ctl macro list
-chrome-ctl macro run <name> --vars '{"param": "value"}'
+make build        # bin/chrome-ctl
+make extension    # extension/dist (load-unpacked target)
 ```
 
----
-
-## Local Development (Phases 1–5)
-
-Prerequisites: Go 1.23+, Node.js 22+, and Google Chrome 116+.
+Start the daemon. On first run it creates the auth token and prints it once:
 
 ```bash
-# Build the CLI
-mkdir -p bin
-go build -o bin/chrome-ctl ./cmd/chrome-ctl
-
-# Build the extension (load-unpacked target: extension/dist)
-cd extension
-npm install
-npm run typecheck
-npm run build
-cd ..
-
-# Start the daemon; the token is printed only on first run
 ./bin/chrome-ctl daemon --start
+# Daemon: STARTED (pid 12345, 127.0.0.1:9229)
+# Auth token: <64 hex characters>
+# Token file: ~/.chrome-ctl/auth_token
+```
 
-# Verify
+Copy the token, then load the extension:
+
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Choose **Load unpacked** and select the `extension/dist` directory.
+3. Open the **chrome-ctl Bridge** popup, paste the token, and click **Save**.
+4. The popup should report **Connected**.
+
+Verify the whole path:
+
+```bash
 ./bin/chrome-ctl status
 ```
 
-Load `extension/dist` from `chrome://extensions` (Developer mode → Load unpacked), open the extension popup, paste the token, and click **Save**. The popup should show **Connected**, and `chrome-ctl status` should report **CONNECTED** with the live tab count.
+```text
+Daemon: RUNNING (127.0.0.1:9229)
+Chrome Extension: CONNECTED
+Active Tabs: 3
+```
 
-With the extension loaded, exercise the observation commands:
+`status` exits `1` when the daemon is unreachable, and `0` when the daemon is up even if the extension is disconnected.
+
+### Install from a release build
+
+`make dist` produces:
+
+```text
+dist/
+├── chrome-ctl-darwin-arm64
+├── chrome-ctl-darwin-amd64
+├── chrome-ctl-linux-amd64
+├── SKILL.md
+└── extension/          # load this directory unpacked
+```
+
+Copy the binary for your platform onto `PATH`, then load `extension/` the same way.
+
+## Commands
+
+Every browser command needs a running daemon and a connected extension.
+
+### Session and tabs
+
+| Command | Description |
+| :--- | :--- |
+| `chrome-ctl status` | Daemon health, extension connection, and active tab count. |
+| `chrome-ctl daemon --start` | Start the daemon in the background. |
+| `chrome-ctl daemon --stop` | Stop the daemon and remove its PID file. |
+| `chrome-ctl daemon` | Run the daemon in the foreground (logs to stderr). |
+| `chrome-ctl version` | Print the CLI version. |
+| `chrome-ctl tabs` | List open tabs with their IDs. |
+| `chrome-ctl open <url>` | Navigate the active tab. Add `--new` to open a new tab. |
+| `chrome-ctl switch <tab_id>` | Make a tab active. |
+
+### Observe
+
+| Command | Description |
+| :--- | :--- |
+| `chrome-ctl snap` | Interactive elements in the viewport, one line each. |
+| `chrome-ctl snap --all` | Include off-screen elements. |
+| `chrome-ctl snap --forms` | Form controls and submit-like buttons only. |
+| `chrome-ctl read [<id_or_selector>]` | Readable Markdown for the page or one element. |
+
+Snapshots look like this:
+
+```text
+[1] <a> "Home" @12,80
+[2] <input:text> "Search" @40,120
+[3] <button> "Sign in" @40,160
+```
+
+IDs are assigned in document order for each snapshot. Treat a snapshot as the current map: after the page changes, take a new one.
+
+### Act
+
+| Command | Description |
+| :--- | :--- |
+| `chrome-ctl click <id>` | Humanized click. Flags: `--double`, `--snap`. |
+| `chrome-ctl type <id> "text"` | Typing with cadence and optional typos. Flags: `--enter`, `--snap`, `--typo-rate` (default `0.02`). |
+| `chrome-ctl press <key>` | Press a key or combination. Repeat `--modifier ctrl\|alt\|shift\|meta`. |
+| `chrome-ctl scroll <down\|up> [amount]` | Scroll in viewport fractions (default `0.8`). |
+| `chrome-ctl upload <id> <file>` | Attach a local file to a file input. |
+| `chrome-ctl wait <ms\|range\|idle\|selector>` | Pause, wait for DOM quiet, or wait for a selector. |
+
+Actions on a tab attach `chrome.debugger`, so Chrome shows the yellow "started debugging this browser" infobar. That is expected. The attachment stays open so subsequent actions are fast; close DevTools on that tab if it is open.
+
+### Capture
+
+| Command | Description |
+| :--- | :--- |
+| `chrome-ctl shot` | WebP screenshot of the active tab. |
+| `chrome-ctl shot --som` | Overlay Set-of-Mark badges matching `snap` IDs. |
+| `chrome-ctl shot --gray` | Grayscale output for text inspection. |
+| `chrome-ctl shot -o <path>` | Choose the output file. |
+| `chrome-ctl shot --max-width <px> --quality <1-100>` | Override defaults (`1024`, `65`). |
+| `chrome-ctl rec start --fps 1\|2` | Start recording the active tab. |
+| `chrome-ctl rec stop --grid -o <path>` | Export a 3×4 WebP contact sheet. |
+| `chrome-ctl rec stop -o <path>.webm` | Export VP9 WebM (requires `ffmpeg`). |
+
+Without `-o`, media is written to `~/.chrome-ctl/media` with mode `0600`.
+
+### Auth and macros
+
+| Command | Description |
+| :--- | :--- |
+| `chrome-ctl sso` | Find a Google OAuth popup and click the account picker. |
+| `chrome-ctl sso --account <email>` | Pick a specific account instead of the first. |
+| `chrome-ctl macro start <name>` | Start recording successful CLI actions. |
+| `chrome-ctl macro save --params a,b --description "..."` | Save the recording with `{{a}}` / `{{b}}` templates. |
+| `chrome-ctl macro list` | List saved macros. |
+| `chrome-ctl macro run <name> --vars '{"a":"value"}'` | Replay locally. |
+
+## A typical loop
+
+A compact read-act-verify cycle:
 
 ```bash
 ./bin/chrome-ctl open "https://news.ycombinator.com"
-./bin/chrome-ctl tabs
-./bin/chrome-ctl snap            # viewport interactive elements
-./bin/chrome-ctl snap --all      # include off-screen elements
-./bin/chrome-ctl snap --forms    # form fields and submit buttons only
-./bin/chrome-ctl read            # readable markdown for the page
-./bin/chrome-ctl read 3          # markdown for snapshot element [3]
+./bin/chrome-ctl snap
+# [1] <a> "new" @20,48
+# [2] <a> "past" @60,48
+./bin/chrome-ctl click 1 --snap        # click and return the next map
+./bin/chrome-ctl read 3                # Markdown for one element
+./bin/chrome-ctl click 5               # act on the new snapshot
 ```
 
-Humanized actions dispatch trusted CDP input (`event.isTrusted === true`). The first action on a tab attaches `chrome.debugger`, so Chrome shows its yellow "started debugging this browser" infobar — that is expected; leave it attached.
+Use `snap` while the UI is textual; reach for `shot --som` when icons, canvas, or layout make text ambiguous.
+
+### Filling a form
 
 ```bash
-./bin/chrome-ctl click 2                 # Bézier move + Gaussian-offset click
-./bin/chrome-ctl click 2 --snap          # click, then return the fresh snapshot
-./bin/chrome-ctl type 3 "Autonomous AI Agent" --enter
-./bin/chrome-ctl press Enter
-./bin/chrome-ctl scroll down             # 0.8 viewports, momentum wheel ticks
-./bin/chrome-ctl upload 5 ./logo.png     # attach a local file to a file input
-./bin/chrome-ctl wait 2500               # human pause
-./bin/chrome-ctl wait 3000-7000          # random pause in range
-./bin/chrome-ctl wait "#results"         # wait for a selector
-./bin/chrome-ctl wait idle               # wait for DOM quiet + document complete
+./bin/chrome-ctl snap --forms
+./bin/chrome-ctl type 4 "Autonomous AI Agent"
+./bin/chrome-ctl upload 5 ./logo.png
+./bin/chrome-ctl click 6 --snap
 ```
 
-`wait idle` observes DOM mutations and `document.readyState`, not network activity: content scripts cannot see the page's network layer.
-
-Visual artifacts are compressed to WebP (max width 1024, quality 65) with `--som` badge numbers that match `snap` element IDs. Recordings capture at 1–2 FPS; `--grid` exports a 3x4 storyboard without extra dependencies. WebM export additionally requires `ffmpeg` on `PATH` (or `CHROME_CTL_FFMPEG=/path/to/ffmpeg`).
-
-```bash
-./bin/chrome-ctl shot --som -o /tmp/view.webp     # badges over interactive elements
-./bin/chrome-ctl shot --gray -o /tmp/text.webp    # grayscale for text verification
-./bin/chrome-ctl rec start --fps 2
-./bin/chrome-ctl rec stop --grid -o /tmp/seq.webp # storyboard contact sheet
-./bin/chrome-ctl rec start --fps 1
-./bin/chrome-ctl rec stop -o /tmp/clip.webm       # VP9 WebM via ffmpeg
-```
-
-Without `-o`, artifacts land in `~/.chrome-ctl/media`. Screenshots and recordings are written with mode `0600`.
-
-Google SSO is click-only: the extension finds the `accounts.google.com` popup, picks the requested account, and clicks Continue/Allow. It never types credentials; if a password prompt appears it stops and asks you to finish manually.
-
-```bash
-./bin/chrome-ctl sso --account me@example.com   # default timeout 15s
-```
-
-Macros are recorded by the daemon from successful CLI actions, so replay stays local and consumes no model tokens. Each recorded element keeps a multi-tier selector (test id, ARIA name, text, XPath, CSS) and replay tries them in order.
+### Recording a reusable macro
 
 ```bash
 ./bin/chrome-ctl macro start lead_search
@@ -182,68 +200,180 @@ Macros are recorded by the daemon from successful CLI actions, so replay stays l
 ./bin/chrome-ctl type 1 "Software Agencies" --enter
 ./bin/chrome-ctl macro save --params search_term --description "Directory search"
 
-./bin/chrome-ctl macro list
 ./bin/chrome-ctl macro run lead_search --vars '{"search_term":"Design Studios"}'
 ```
 
-Macros are stored as `~/.chrome-ctl/macros/<name>.json` (mode `0600`). If a step cannot resolve its element, replay stops with `MACRO STEP FAILED` plus a fresh snapshot on stderr and exit code 1, so the agent can repair the step.
+The daemon records the element descriptor before each action mutates the page, so navigation does not erase the target. Replay resolves test IDs, ARIA names, text, XPath, and CSS in order. If a step cannot resolve, replay stops with `MACRO STEP FAILED`, a fresh snapshot, and exit code `1`.
 
-To verify trusted events locally, serve the bundled form fixture and automate it:
+Macros live in `~/.chrome-ctl/macros/<name>.json` with mode `0600`.
+
+### Google SSO
 
 ```bash
-python3 -m http.server 8080 --directory tests/fixtures &
-./bin/chrome-ctl open "http://localhost:8080/test_form.html"
-./bin/chrome-ctl snap
-./bin/chrome-ctl click <id>              # the page panel reports click trusted: true
-./bin/chrome-ctl type <id> "Hello"       # and key trusted: true
+./bin/chrome-ctl sso --account me@example.com
 ```
 
-After rebuilding the extension, click **Reload** on `chrome://extensions`. Content scripts are injected on demand into tabs that were already open, so no page reload is required.
+The extension finds the `accounts.google.com` popup, selects the account, and clicks Continue or Allow. It never types credentials. If a password or CAPTCHA appears, it stops and leaves the step to you.
 
-- Daemon control: `chrome-ctl daemon --start|--stop`; background daemon logs go to `~/.chrome-ctl/daemon.log`.
-- Auth token: `~/.chrome-ctl/auth_token` (mode `0600`); use `cat ~/.chrome-ctl/auth_token` to retrieve it later.
+## How it works
 
-Automated checks:
+```text
+Agent or shell
+      │
+      ▼
+chrome-ctl CLI ─── HTTP POST /rpc (Bearer token) ───▶ daemon (127.0.0.1:9229)
+                                                         │
+                                                         │ WebSocket /ws (token)
+                                                         ▼
+                                                  MV3 extension
+                                    ┌──────────────────┴──────────────────┐
+                              offscreen document                  service worker
+                              (persistent socket)              (tabs, debugger, SSO)
+                                                                        │
+                                                                 content scripts
+                                                                        │
+                                                                  Chrome tabs
+```
+
+- The **CLI** is stateless. It reads the token from disk and sends JSON-RPC 2.0 requests to the daemon.
+- The **daemon** authenticates requests, keeps media and macro state, and forwards browser work.
+- The **extension** keeps the WebSocket alive in an offscreen document, so Manifest V3 service-worker suspension does not drop the bridge.
+- **Content scripts** build snapshots, read Markdown, and describe elements across open shadow roots and same-origin iframes.
+
+The wire protocol is specified in [docs/PROTOCOL.md](docs/PROTOCOL.md). Architecture and lifecycle details are in [docs/TECH_SPEC.md](docs/TECH_SPEC.md) and [docs/MV3_LIFECYCLE_SPEC.md](docs/MV3_LIFECYCLE_SPEC.md).
+
+## Security model
+
+`chrome-ctl` is intentionally local and single-user.
+
+- The daemon binds only to `127.0.0.1`.
+- Every HTTP and WebSocket request requires a comparison against a 64-character token stored at `~/.chrome-ctl/auth_token` (mode `0600`, directory `0700`).
+- Tokens and request URLs are never written to daemon logs.
+- The extension sends the token only to the loopback daemon.
+- SSO automation is click-only and aborts at password prompts; credentials and CAPTCHAs are left to you.
+- Screenshots, recordings, and macros stay under `~/.chrome-ctl`.
+- `chrome.debugger` grants broad control over the attached tab. Attach deliberately and stop the daemon when you are done.
+
+Do not commit the token, paste it into a website, or share logs that contain it. To rotate it, stop the daemon, delete `~/.chrome-ctl/auth_token`, start the daemon again, and paste the new token into the extension popup.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `CHROME_CTL_HOME` | `~/.chrome-ctl` | Config, token, media, macro, and log directory. |
+| `CHROME_CTL_ADDR` | `127.0.0.1:9229` | Daemon listen address. Intended for tests and isolated instances. |
+| `CHROME_CTL_FFMPEG` | unset | Explicit `ffmpeg` path for WebM export. |
+
+The extension connects to `ws://127.0.0.1:9229/ws`, so changing `CHROME_CTL_ADDR` requires a matching extension build. Use the default for normal operation.
+
+Layout:
+
+```text
+~/.chrome-ctl/
+├── auth_token      # 0600
+├── daemon.pid
+├── daemon.log      # background daemon stdout/stderr
+├── media/          # screenshots and recordings
+└── macros/         # <name>.json
+```
+
+## Development
 
 ```bash
-go test ./...
-(cd extension && npm run typecheck && npm run build && npm test)
+make build        # static CLI with CGO_ENABLED=0 and -tags nodynamic
+make extension    # typecheck and bundle extension/dist
+make test         # Go tests, extension typecheck/build, extension tests
+make e2e          # fake-extension harness, no Chrome required
+make dist         # cross-compiled binaries, extension, SKILL.md
+make clean        # remove bin/ and dist/
+```
+
+The `nodynamic` build tag selects the pure-Go WebP backend instead of dynamically loading a system `libwebp`. Together with `CGO_ENABLED=0` this produces statically linked binaries. If you build manually, include the tag:
+
+```bash
+go build -tags nodynamic -o bin/chrome-ctl ./cmd/chrome-ctl
+go test -tags nodynamic ./...
+```
+
+Extension tests run under Node's test runner with jsdom:
+
+```bash
+cd extension
+npm install
+npm run typecheck
+npm run build
+npm test
+```
+
+The E2E harness starts a temporary daemon and a fake extension, then exercises authentication, forwarding, actions, media, SSO, and macros:
+
+```bash
 bash tests/e2e/run.sh
 ```
 
-The CLI provides `status`, `daemon`, `version`, `tabs`, `open`, `switch`, `snap`, `read`, `click`, `type`, `press`, `scroll`, `upload`, `wait`, `shot`, `rec`, `sso`, and `macro`.
+### Fixtures
 
----
-
-## Packaging & agent skill
-
-The `Makefile` wraps the build, test, and release flows:
+`tests/fixtures` contains local pages for manual and automated checks: a form with trusted-event reporting, open shadow DOM, nested same-origin iframes, a modal dialog, and infinite scroll.
 
 ```bash
-make build      # bin/chrome-ctl, built with CGO_ENABLED=0
-make extension  # install deps if needed, typecheck, build extension/dist
-make test       # go test ./... plus extension typecheck/build/tests
-make e2e        # build the CLI, then run tests/e2e/run.sh
-make dist       # release layout in dist/
+python3 -m http.server 8080 --directory tests/fixtures
+./bin/chrome-ctl open "http://localhost:8080/test_form.html"
+./bin/chrome-ctl snap
 ```
 
-`make dist` cross-compiles `dist/chrome-ctl-darwin-arm64`, `dist/chrome-ctl-darwin-amd64`, and `dist/chrome-ctl-linux-amd64`, and stages the extension at `dist/extension` and the skill at `dist/SKILL.md`. `make clean` removes `bin/` and `dist/` only, leaving `extension/dist` and `extension/node_modules` untouched.
+### Agent skill
 
-Install the agent skill by copying it into your agent's skills directory:
+`SKILL.md` teaches an agent the snapshot-first workflow, action limits, and macro reuse. Install it into your agent's skills directory:
 
 ```bash
 mkdir -p ~/.claude/skills/chrome-ctl
 cp SKILL.md ~/.claude/skills/chrome-ctl/SKILL.md
 
-# or, for Hermes
+# Hermes
 mkdir -p ~/.hermes/skills/chrome-ctl
 cp SKILL.md ~/.hermes/skills/chrome-ctl/SKILL.md
 ```
 
-WebP screenshots and storyboard recordings have no external dependencies. The build uses `-tags nodynamic`, which selects the pure-Go WebP backend instead of dlopen-ing a system `libwebp`; combined with `CGO_ENABLED=0` this yields statically linked binaries with no cgo or system library requirements. ffmpeg is an optional runtime dependency used only for WebM recording export; if it is missing, use `rec stop --grid` instead.
+After rebuilding the extension, click **Reload** on `chrome://extensions`. Content scripts are injected on demand into already-open tabs, so pages do not need a refresh.
 
----
+## Troubleshooting
 
-## 📄 License
+| Symptom | Likely cause and fix |
+| :--- | :--- |
+| `Daemon: STOPPED` | Run `chrome-ctl daemon --start`; inspect `~/.chrome-ctl/daemon.log`. |
+| `Chrome Extension: DISCONNECTED` | Reload the extension, reopen the popup, and re-save the token. |
+| Popup shows `Unconfigured` | No token in extension storage. Paste the token from `~/.chrome-ctl/auth_token`. |
+| Commands fail with `element not found` | Take a fresh `snap`; the page changed or the element is off-screen (`snap --all`). |
+| Debugger attach fails | Close DevTools on that tab, or stop another tool using `chrome.debugger`. |
+| Screenshot fails with a WebP error | Rebuild with `make build` (missing `-tags nodynamic`). |
+| WebM export fails | Install `ffmpeg`, set `CHROME_CTL_FFMPEG`, or use `rec stop --grid`. |
+| Popup never connects | Confirm the daemon is on `127.0.0.1:9229`; the extension URL is fixed. |
+| Content commands do nothing on an old tab | Reload the tab or navigate once so the content script is injected. |
+
+Status semantics: `status` exits `1` only when the daemon cannot be reached. A reachable daemon with no extension still exits `0` and prints `DISCONNECTED`.
+
+## Limitations
+
+- macOS and Linux only; no Windows build target.
+- The extension drives the active tab; screenshots and recordings capture the visible tab, not background tabs.
+- Sites that block automation, require interactive CAPTCHAs, or prohibit scripted access remain your responsibility.
+- WebM export depends on an external `ffmpeg`; WebP artifacts do not.
+- The debugger attachment is visible to Chrome and can conflict with DevTools or other debugging extensions.
+
+## Documentation
+
+| Document | Scope |
+| :--- | :--- |
+| [docs/PRD.md](docs/PRD.md) | Product requirements, command surface, and token budget. |
+| [docs/TECH_SPEC.md](docs/TECH_SPEC.md) | Architecture, stack, security model, and layout. |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | JSON-RPC schemas for HTTP `/rpc` and WebSocket `/ws`. |
+| [docs/MV3_LIFECYCLE_SPEC.md](docs/MV3_LIFECYCLE_SPEC.md) | Offscreen socket host, service-worker awakening, debugger lifecycle. |
+| [docs/HUMANIZER_SPEC.md](docs/HUMANIZER_SPEC.md) | Mouse paths, typing cadence, and scroll behavior. |
+| [docs/MEDIA_PIPELINE.md](docs/MEDIA_PIPELINE.md) | WebP compression, Set-of-Mark overlays, storyboards. |
+| [docs/MACRO_SCHEMA.md](docs/MACRO_SCHEMA.md) | Macro file schema, selector tiers, and replay rules. |
+| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Six-phase roadmap and verification checklist. |
+| [SKILL.md](SKILL.md) | Agent-facing operating instructions. |
+
+## License
 
 MIT License.
