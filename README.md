@@ -101,6 +101,46 @@ chrome-ctl macro run <name> --vars '{"param": "value"}'
 
 ---
 
+## Local Development (Phase 1)
+
+Prerequisites: Go 1.23+, Node.js 22+, and Google Chrome 116+.
+
+```bash
+# Build the CLI
+mkdir -p bin
+go build -o bin/chrome-ctl ./cmd/chrome-ctl
+
+# Build the extension (load-unpacked target: extension/dist)
+cd extension
+npm install
+npm run typecheck
+npm run build
+cd ..
+
+# Start the daemon; the token is printed only on first run
+./bin/chrome-ctl daemon --start
+
+# Verify
+./bin/chrome-ctl status
+```
+
+Load `extension/dist` from `chrome://extensions` (Developer mode → Load unpacked), open the extension popup, paste the token, and click **Save**. The popup should show **Connected**, and `chrome-ctl status` should report **CONNECTED** with the live tab count.
+
+- Daemon control: `chrome-ctl daemon --start|--stop`; background daemon logs go to `~/.chrome-ctl/daemon.log`.
+- Auth token: `~/.chrome-ctl/auth_token` (mode `0600`); use `cat ~/.chrome-ctl/auth_token` to retrieve it later.
+
+Automated checks:
+
+```bash
+go test ./...
+(cd extension && npm run typecheck && npm run build)
+bash tests/e2e/run.sh
+```
+
+Phase 1 provides `status`, `daemon`, and `version`; tab control, `snap`, and actions arrive in later phases.
+
+---
+
 ## 📄 License
 
 MIT License.

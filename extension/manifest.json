@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "chrome-ctl Bridge",
+  "version": "1.0.0",
+  "description": "High-efficiency, zero-detection automation bridge for autonomous AI agents.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "debugger",
+    "scripting",
+    "storage",
+    "offscreen"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "chrome-ctl-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Manifest V3 Chrome extension bridging chrome-ctl to the browser",
+  "scripts": {
+    "build": "node build.mjs && node scripts/verify.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.6",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

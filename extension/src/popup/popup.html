@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>chrome-ctl Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="card">
+      <h1>chrome-ctl Bridge</h1>
+
+      <div class="status" aria-live="polite">
+        <span id="dot" class="dot unconfigured"></span>
+        <span id="status-text">Connecting</span>
+      </div>
+
+      <p id="version" class="version" hidden></p>
+      <p id="error" class="error" hidden></p>
+
+      <label for="token">Auth token</label>
+      <input
+        id="token"
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Paste token"
+      />
+
+      <div class="actions">
+        <button id="save" class="primary" type="button">Save</button>
+        <button id="reconnect" type="button">Reconnect</button>
+      </div>
+
+      <p id="note" class="note" role="status"></p>
+      <p class="hint">64-character hex token from <code>~/.chrome-ctl/auth_token</code></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

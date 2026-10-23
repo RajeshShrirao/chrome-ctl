@@ -12,17 +12,17 @@
 Establish the Go CLI skeleton, daemon WebSocket server, security token generation, and the Chrome Extension with its persistent offscreen WebSocket client.
 
 ### Tasks
-- [ ] **1.1 Project & Go Module Setup**
+- [x] **1.1 Project & Go Module Setup**
   - Initialize Go module `github.com/rajeshshrirao/chrome-ctl` (Go 1.23+).
   - Setup Cobra CLI structure in `cmd/chrome-ctl/main.go` and `internal/cli/`.
   - Add basic subcommands: `status`, `daemon`, `version`.
-- [ ] **1.2 Daemon WebSocket Server & Auth Manager**
+- [x] **1.2 Daemon WebSocket Server & Auth Manager**
   - Implement `internal/daemon/server.go` using `gorilla/websocket`.
   - Implement `internal/daemon/auth.go`:
     - Generate or load 64-char hex auth token from `~/.chrome-ctl/auth_token` (`chmod 0600`).
     - Validate `?token=...` during WebSocket upgrade.
   - Implement 15-second ping/pong heartbeat handling.
-- [ ] **1.3 Chrome Extension Scaffolding (Manifest V3)**
+- [x] **1.3 Chrome Extension Scaffolding (Manifest V3)**
   - Setup TypeScript build with `esbuild` or `tsup` in `extension/`.
   - Create `extension/manifest.json` with permissions: `["activeTab", "tabs", "debugger", "scripting", "storage", "offscreen"]`.
   - Implement `src/offscreen/offscreen.ts`:
