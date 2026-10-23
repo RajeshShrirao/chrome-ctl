@@ -56,13 +56,13 @@ Establish the Go CLI skeleton, daemon WebSocket server, security token generatio
 Enable tab navigation, clean tab querying, and token-minimal interactive element indexing (`snap`) along with readable content extraction (`read`).
 
 ### Tasks
-- [ ] **2.1 Tab Management RPCs**
+- [x] **2.1 Tab Management RPCs**
   - Implement `tab.list`, `tab.open`, `tab.switch` in extension service worker.
   - Implement CLI commands:
     - `chrome-ctl tabs`
     - `chrome-ctl open <url> [--new]`
     - `chrome-ctl switch <tab_id>`
-- [ ] **2.2 In-Page Content Script Indexer (`src/content/indexer.ts`)**
+- [x] **2.2 In-Page Content Script Indexer (`src/content/indexer.ts`)**
   - Implement interactive element query selector (`a[href]`, `button`, `input`, `textarea`, `select`, `[role="button"]`, etc.).
   - Implement visibility filter: discard elements with `display: none`, `visibility: hidden`, `opacity: 0`, or $w, h < 4\text{px}$.
   - Viewport bounds check: discard elements outside current viewport unless `--all` is set.
@@ -70,9 +70,9 @@ Enable tab navigation, clean tab querying, and token-minimal interactive element
   - Flattening of nested interactive targets (e.g., `<button><span>Text</span></button>`).
   - Output formatting strictly matching PRD schema:
     `[ID] <TAG:type> "Label/Text" (value/state) @x,y`
-- [ ] **2.3 Form Mode Filter (`--forms`)**
+- [x] **2.3 Form Mode Filter (`--forms`)**
   - Implement `src/content/forms.ts` to filter strictly for inputs, selects, textareas, and submit buttons.
-- [ ] **2.4 Content Extractor (`page.read`)**
+- [x] **2.4 Content Extractor (`page.read`)**
   - Implement readability/markdown conversion for page or target container ID.
   - Wire CLI command: `chrome-ctl read [<id_or_selector>]`.
 
@@ -94,15 +94,15 @@ Enable tab navigation, clean tab querying, and token-minimal interactive element
 Implement trusted hardware events via `chrome.debugger` combined with human biometrics (Bézier curves, Fitts's Law, cadence typing, momentum scroll).
 
 ### Tasks
-- [ ] **3.1 `chrome.debugger` Lifecycle Controller**
+- [x] **3.1 `chrome.debugger` Lifecycle Controller**
   - Implement lazy attach/detach for target tabs in `src/background/debugger.ts`.
   - Handle auto-reconnection on tab navigation.
-- [ ] **3.2 Humanizer Engine (`internal/humanizer/` & Extension)**
+- [x] **3.2 Humanizer Engine (`internal/humanizer/` & Extension)**
   - Implement cubic Bézier trajectory generation between starting position and target coordinates.
   - Add Gaussian coordinate jitter ($\sigma = 0.2 \times \min(w, h)$) so clicks never hit exact center.
   - Implement Fitts's Law acceleration and deceleration curves.
   - Implement cadence typing: log-normal inter-key delays ($\mu = 65\text{ms}, \sigma = 25\text{ms}$), bigram speedups, and typo-burst simulation with backspace.
-- [ ] **3.3 Action Commands**
+- [x] **3.3 Action Commands**
   - Implement `chrome-ctl click <id> [--snap]`
   - Implement `chrome-ctl type <id> "<text>" [--enter] [--typo-rate 0.02] [--snap]`
   - Implement `chrome-ctl press <key>` (`Enter`, `Tab`, `Escape`, `ArrowDown`)
@@ -128,16 +128,16 @@ Implement trusted hardware events via `chrome.debugger` combined with human biom
 Deliver token-optimized visual verification artifacts (compressed WebP, Set-of-Mark overlays, and 1–2 FPS WebM / 3x4 contact sheets).
 
 ### Tasks
-- [ ] **4.1 Screen Capture & Set-of-Mark (SoM)**
+- [x] **4.1 Screen Capture & Set-of-Mark (SoM)**
   - Capture active viewport via `chrome.tabs.captureVisibleTab`.
   - Coordinate mapping: extract bounding boxes from content script indexer.
   - Draw high-contrast numeric badges (`[1]`, `[2]`) at element positions if `--som` is set.
-- [ ] **4.2 Image Compression Pipeline (`internal/media/image.go`)**
+- [x] **4.2 Image Compression Pipeline (`internal/media/image.go`)**
   - Downscale image width to max `1024px` maintaining aspect ratio.
   - Encode to WebP Quality 65.
   - Support grayscale conversion (`--gray`) to minimize tokens for text verification.
   - Implement CLI command: `chrome-ctl shot [--som] [--gray] [-o path]`.
-- [ ] **4.3 Low-FPS Recording & Storyboard Contact Sheets**
+- [x] **4.3 Low-FPS Recording & Storyboard Contact Sheets**
   - Implement frame capture (1–2 FPS) during recording session in `internal/media/video.go`.
   - Stitch sequential frames into a $3 \times 4$ contact sheet WebP image (`--grid`).
   - Encode video to low-bitrate WebM (VP9).
@@ -159,16 +159,16 @@ Deliver token-optimized visual verification artifacts (compressed WebP, Set-of-M
 Provide zero-touch Google OAuth authentication and deterministic zero-token local macro recording/replaying.
 
 ### Tasks
-- [ ] **5.1 Google OAuth Popup Interceptor (`chrome-ctl sso`)**
+- [x] **5.1 Google OAuth Popup Interceptor (`chrome-ctl sso`)**
   - Service worker detects popup window or tab navigation to `accounts.google.com`.
   - Identifies target Google account (or picks default active account).
   - Automatically clicks "Allow / Continue" and waits for popup closure and parent tab redirect.
-- [ ] **5.2 Macro Recorder (`chrome-ctl macro start <name>`)**
+- [x] **5.2 Macro Recorder (`chrome-ctl macro start <name>`)**
   - Action logger stores executed CLI steps with multi-tiered resilient selectors (ARIA label, text content, CSS selector, relative XPath).
-- [ ] **5.3 Macro Parameterizer & Storage (`chrome-ctl macro save`)**
+- [x] **5.3 Macro Parameterizer & Storage (`chrome-ctl macro save`)**
   - Parameterize recorded literals into `{{variable_name}}` templates.
   - Save schema to `~/.chrome-ctl/macros/<name>.json`.
-- [ ] **5.4 Zero-Token Macro Replayer (`chrome-ctl macro run`)**
+- [x] **5.4 Zero-Token Macro Replayer (`chrome-ctl macro run`)**
   - Replays steps locally through the Go daemon with parameter substitution.
   - Pauses and returns a clean `snap` if an element selector fails, allowing the LLM to intervene.
 
@@ -189,9 +189,9 @@ Provide zero-touch Google OAuth authentication and deterministic zero-token loca
 ## Phase 6: Packaging, Agent Skills (`SKILL.md`) & Hardening
 
 ### Tasks
-- [ ] **6.1 Makefile & Multi-Platform Build**
+- [x] **6.1 Makefile & Multi-Platform Build**
   - Build scripts for macOS (Apple Silicon `darwin-arm64`, Intel `darwin-amd64`) and Linux (`linux-amd64`).
-- [ ] **6.2 Agent Skill Definition**
+- [x] **6.2 Agent Skill Definition**
   - Deploy `SKILL.md` for AI agent environments (Hermes, Claude Code, OpenCode).
-- [ ] **6.3 Integration Test Suite**
+- [x] **6.3 Integration Test Suite**
   - Automated fixtures testing complex UI scenarios: Shadow DOM, nested iframes, infinite scroll, and modal dialogs.

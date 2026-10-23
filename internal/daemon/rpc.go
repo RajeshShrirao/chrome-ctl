@@ -12,6 +12,42 @@ import (
 
 const maxRPCBodyBytes = 1 << 20
 
+const (
+	actionTypeTimeout   = 300 * time.Second
+	actionMediumTimeout = 60 * time.Second
+	actionPressTimeout  = 20 * time.Second
+	pageWaitTimeout     = 30 * time.Second
+	mediaCaptureTimeout = 30 * time.Second
+	pageDescribeTimeout = 5 * time.Second
+	pageResolveTimeout  = 20 * time.Second
+	authSSOTimeout      = 60 * time.Second
+)
+
+// forwardTimeoutFor gives long-running actions a budget beyond the default
+// forward timeout; the extension, offscreen relay, and CLI use matching budgets.
+func forwardTimeoutFor(method string, fallback time.Duration) time.Duration {
+	switch method {
+	case protocol.MethodActionType:
+		return actionTypeTimeout
+	case protocol.MethodActionClick, protocol.MethodActionScroll, protocol.MethodActionUpload:
+		return actionMediumTimeout
+	case protocol.MethodActionPress:
+		return actionPressTimeout
+	case protocol.MethodPageWait:
+		return pageWaitTimeout
+	case protocol.MethodMediaCapture:
+		return mediaCaptureTimeout
+	case protocol.MethodPageDescribe:
+		return pageDescribeTimeout
+	case protocol.MethodPageResolve:
+		return pageResolveTimeout
+	case protocol.MethodAuthSSO:
+		return authSSOTimeout
+	default:
+		return fallback
+	}
+}
+
 func (d *daemon) handleRPC(w http.ResponseWriter, r *http.Request) {
 	var req protocol.Request
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRPCBodyBytes))
@@ -25,10 +61,14 @@ func (d *daemon) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var resp protocol.Response
-	if req.Method == protocol.MethodSessionStatus {
+	if local, ok := d.handleLocalRPC(r.Context(), req); ok {
+		resp = local
+	} else if req.Method == protocol.MethodSessionStatus {
 		resp = d.handleSessionStatus(r.Context(), req)
 	} else {
+		pending := d.macroBeforeForward(r.Context(), req)
 		resp = d.forwardResponse(r.Context(), req)
+		d.macroAfterForward(req, resp, pending)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -105,7 +145,7 @@ func (d *daemon) forward(ctx context.Context, req protocol.Request) (json.RawMes
 		return nil, &protocol.RPCError{Code: protocol.ErrConnection, Message: "failed to send request to extension"}
 	}
 
-	timer := time.NewTimer(d.cfg.ForwardTimeout)
+	timer := time.NewTimer(forwardTimeoutFor(req.Method, d.cfg.ForwardTimeout))
 	defer timer.Stop()
 	select {
 	case resp := <-ch:

@@ -3,6 +3,7 @@ import {
   HEARTBEAT_MS,
   Methods,
   STALE_MS,
+  rpcTimeoutMs,
 } from "../shared/protocol.js";
 import type { RpcRequest, RpcResponse } from "../shared/protocol.js";
 import type {
@@ -12,7 +13,6 @@ import type {
   WsStatusReply,
 } from "../shared/messages.js";
 
-const RPC_TIMEOUT_MS = 10_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 10_000;
 const BACKOFF_FACTOR = 1.5;
@@ -275,13 +275,14 @@ function forwardRequest(ws: WebSocket, request: RpcRequest): void {
     return;
   }
 
+  const timeoutMs = rpcTimeoutMs(request.method);
   const timer = setTimeout(() => {
     resolvePending(id, {
       jsonrpc: "2.0",
       id,
       error: { code: -32603, message: "extension timed out" },
     });
-  }, RPC_TIMEOUT_MS);
+  }, timeoutMs);
   pending.set(id, { ws, timer });
 
   const message: RuntimeMessage = { target: "sw", type: "rpc", request };

@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chrome-ctl test form</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1.25rem 4rem;
+    background: #14161a;
+    color: #e8eaed;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  main { max-width: 620px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 0.35rem; }
+  h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+  h3 { font-size: 0.9rem; margin: 1rem 0 0.35rem; color: #b8bec9; }
+  p.hint, p.label { margin: 0 0 1.25rem; color: #9aa0aa; font-size: 0.85rem; }
+  form { display: grid; gap: 0.45rem; }
+  label { font-size: 0.9rem; color: #cdd2da; }
+  input[type="text"], input[type="email"], input[type="file"], textarea, select {
+    width: 100%;
+    padding: 0.55rem 0.65rem;
+    background: #1d2026;
+    color: #e8eaed;
+    border: 1px solid #3a3f4a;
+    border-radius: 6px;
+    font: inherit;
+  }
+  input:focus, textarea:focus, select:focus, .editable:focus {
+    outline: 2px solid #5b9dff;
+    outline-offset: 1px;
+  }
+  textarea { min-height: 4.5rem; resize: vertical; }
+  label.inline { display: flex; align-items: center; gap: 0.5rem; margin: 0.35rem 0; }
+  label.inline input { width: auto; }
+  .editable {
+    min-height: 4rem;
+    padding: 0.55rem 0.65rem;
+    background: #1d2026;
+    border: 1px dashed #3a3f4a;
+    border-radius: 6px;
+    white-space: pre-wrap;
+  }
+  .editable:empty::before { content: attr(data-placeholder); color: #6b7280; }
+  .buttons { display: flex; gap: 0.6rem; margin-top: 0.75rem; }
+  button {
+    padding: 0.55rem 1rem;
+    font: inherit;
+    color: #e8eaed;
+    background: #2a2f38;
+    border: 1px solid #3f4551;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  button:hover { background: #333945; }
+  button[type="submit"] { background: #2f5fa8; border-color: #3d74c6; }
+  button[type="submit"]:hover { background: #376cbd; }
+  .panel {
+    margin-top: 2rem;
+    padding: 1rem 1.1rem;
+    background: #191c21;
+    border: 1px solid #2d323b;
+    border-radius: 8px;
+  }
+  #status { font-size: 0.9rem; }
+  #status ul { margin: 0; padding-left: 1.2rem; }
+  #status li.empty { color: #6b7280; list-style: none; padding-left: 0; }
+  #submitted {
+    margin: 0;
+    padding: 0.6rem 0.7rem;
+    background: #101216;
+    border: 1px solid #2d323b;
+    border-radius: 6px;
+    color: #a8e6b0;
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  code { color: #8ab4f8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>chrome-ctl test form</h1>
+  <p class="hint">Serve with <code>python3 -m http.server 8080 --directory tests/fixtures</code>, open this page, then click and type through chrome-ctl. The status panel below reports <code>event.isTrusted</code> for page-level clicks and key presses.</p>
+
+  <form id="test-form" autocomplete="off">
+    <label for="name">Full name</label>
+    <input id="name" name="name" type="text" placeholder="Full name">
+
+    <label for="email">Email address</label>
+    <input id="email" name="email" type="email" placeholder="you@example.com">
+
+    <label for="bio">Short bio</label>
+    <textarea id="bio" name="bio" placeholder="A sentence about yourself"></textarea>
+
+    <label class="inline" for="subscribe">
+      <input id="subscribe" name="subscribe" type="checkbox">
+      Subscribe to updates
+    </label>
+
+    <label for="plan">Plan</label>
+    <select id="plan" name="plan">
+      <option value="free">Free</option>
+      <option value="pro">Pro</option>
+      <option value="team">Team</option>
+    </select>
+
+    <label for="attachment">Attachment</label>
+    <input id="attachment" name="attachment" type="file">
+
+    <p class="label" id="notes-label">Notes (contenteditable)</p>
+    <div id="notes" class="editable" contenteditable="true" role="textbox"
+         aria-labelledby="notes-label" data-placeholder="Type notes here..."></div>
+
+    <div class="buttons">
+      <button type="button" id="click-me">Click me</button>
+      <button type="submit">Send</button>
+    </div>
+  </form>
+
+  <section class="panel">
+    <h2>Event sanity</h2>
+    <div id="status">
+      <div>click trusted: <span id="click-trusted">false</span></div>
+      <div>key trusted: <span id="key-trusted">false</span></div>
+      <div>Click me count: <span id="click-count">0</span></div>
+
+      <h3>Entered text</h3>
+      <ul id="entered"><li class="empty">(nothing yet)</li></ul>
+
+      <h3>Submitted values</h3>
+      <pre id="submitted">(not submitted yet)</pre>
+    </div>
+  </section>
+</main>
+
+<script>
+  (function () {
+    "use strict";
+
+    var form = document.getElementById("test-form");
+    var notes = document.getElementById("notes");
+    var enteredList = document.getElementById("entered");
+    var submitted = document.getElementById("submitted");
+    var clickTrusted = document.getElementById("click-trusted");
+    var keyTrusted = document.getElementById("key-trusted");
+    var clickCount = document.getElementById("click-count");
+    var clicks = 0;
+
+    document.addEventListener("click", function (event) {
+      clickTrusted.textContent = String(event.isTrusted);
+    }, true);
+
+    document.addEventListener("keydown", function (event) {
+      keyTrusted.textContent = String(event.isTrusted);
+    }, true);
+
+    function valueOf(id) {
+      var element = document.getElementById(id);
+      return element ? String(element.value || "").trim() : "";
+    }
+
+    function refreshEntered() {
+      var entries = [
+        ["name", valueOf("name")],
+        ["email", valueOf("email")],
+        ["bio", valueOf("bio")],
+        ["notes", String(notes.innerText || "").trim()]
+      ];
+
+      var visible = entries.filter(function (entry) { return entry[1] !== ""; });
+      enteredList.textContent = "";
+      if (visible.length === 0) {
+        var empty = document.createElement("li");
+        empty.className = "empty";
+        empty.textContent = "(nothing yet)";
+        enteredList.appendChild(empty);
+        return;
+      }
+      visible.forEach(function (entry) {
+        var item = document.createElement("li");
+        item.textContent = entry[0] + ": " + entry[1];
+        enteredList.appendChild(item);
+      });
+    }
+
+    form.addEventListener("input", refreshEntered);
+    notes.addEventListener("input", refreshEntered);
+
+    document.getElementById("click-me").addEventListener("click", function () {
+      clicks += 1;
+      clickCount.textContent = String(clicks);
+    });
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var data = new FormData(form);
+      var lines = [
+        "name: " + String(data.get("name") || ""),
+        "email: " + String(data.get("email") || ""),
+        "bio: " + String(data.get("bio") || ""),
+        "plan: " + String(data.get("plan") || ""),
+        "subscribe: " + (data.get("subscribe") ? "yes" : "no")
+      ];
+
+      var file = data.get("attachment");
+      lines.push("attachment: " + (file && file.name ? file.name + " (" + file.size + " B)" : "(none)"));
+      lines.push("notes: " + String(notes.innerText || "").trim());
+
+      submitted.textContent = lines.join("\n");
+      refreshEntered();
+    });
+  })();
+</script>
+</body>
+</html>

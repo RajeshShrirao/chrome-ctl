@@ -10,20 +10,33 @@ const dist = path.join(root, "dist");
 const watchMode = process.argv.includes("--watch");
 
 /** @type {import("esbuild").BuildOptions} */
-const options = {
+const baseOptions = {
+  outbase: src,
+  outdir: dist,
+  bundle: true,
+  target: "chrome116",
+  sourcemap: true,
+  platform: "browser",
+  logLevel: "info",
+};
+
+/** @type {import("esbuild").BuildOptions} */
+const moduleOptions = {
+  ...baseOptions,
   entryPoints: [
     path.join(src, "background", "service_worker.ts"),
     path.join(src, "offscreen", "offscreen.ts"),
     path.join(src, "popup", "popup.ts"),
   ],
-  outbase: src,
-  outdir: dist,
-  bundle: true,
   format: "esm",
-  target: "chrome116",
-  sourcemap: true,
-  platform: "browser",
-  logLevel: "info",
+};
+
+// Content scripts run as classic scripts; bundle them as a self-executing IIFE.
+/** @type {import("esbuild").BuildOptions} */
+const contentOptions = {
+  ...baseOptions,
+  entryPoints: [path.join(src, "content", "indexer.ts")],
+  format: "iife",
 };
 
 const staticFiles = [
@@ -41,7 +54,7 @@ async function copyStatic() {
 
 async function runOnce() {
   await rm(dist, { recursive: true, force: true });
-  await build(options);
+  await Promise.all([build(moduleOptions), build(contentOptions)]);
   await copyStatic();
   console.log("static assets copied to dist/");
 }
@@ -50,8 +63,8 @@ async function runWatch() {
   await rm(dist, { recursive: true, force: true });
   await copyStatic();
 
-  const ctx = await context(options);
-  await ctx.watch();
+  const contexts = await Promise.all([context(moduleOptions), context(contentOptions)]);
+  await Promise.all(contexts.map((ctx) => ctx.watch()));
 
   for (const [from] of staticFiles) {
     watchFs(from, () => {

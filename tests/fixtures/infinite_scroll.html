@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Infinite scroll fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 32px;
+      }
+      #rows {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-width: 420px;
+      }
+      #rows button {
+        padding: 10px 14px;
+        text-align: left;
+      }
+      #scroll-spacer {
+        height: 1400px;
+      }
+      #row-count {
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Infinite scroll fixture</h1>
+    <p>
+      Ten rows render initially. Scrolling near the bottom appends ten more
+      focusable buttons per scroll; row labels and the counter are deterministic.
+    </p>
+    <p id="row-count" role="status">Rows: 0</p>
+    <div id="rows"></div>
+    <div id="scroll-spacer" aria-hidden="true"></div>
+
+    <script>
+      const rows = document.getElementById("rows");
+      const count = document.getElementById("row-count");
+      let rendered = 0;
+
+      function appendRows(amount) {
+        for (let index = 0; index < amount; index += 1) {
+          rendered += 1;
+          const rowNumber = rendered;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "row";
+          button.dataset.testid = `row-${rowNumber}`;
+          button.textContent = `Row ${rowNumber}`;
+          button.addEventListener("click", () => {
+            count.textContent = `Rows: ${rendered} (clicked row ${rowNumber})`;
+          });
+          rows.appendChild(button);
+        }
+        count.textContent = `Rows: ${rendered}`;
+      }
+
+      function maybeAppendRows() {
+        const documentElement = document.documentElement;
+        const nearBottom =
+          window.scrollY + window.innerHeight >=
+          documentElement.scrollHeight - 200;
+        if (nearBottom) {
+          appendRows(10);
+        }
+      }
+
+      appendRows(10);
+      window.addEventListener("scroll", maybeAppendRows, { passive: true });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Modal fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 32px;
+      }
+      button {
+        padding: 8px 14px;
+        margin: 4px 0;
+      }
+      #underlying {
+        display: block;
+        margin-top: 12px;
+      }
+      dialog {
+        padding: 24px;
+        border: 0;
+        border-radius: 8px;
+        max-width: 320px;
+      }
+      dialog::backdrop {
+        background: rgba(0, 0, 0, 0.65);
+      }
+      #status {
+        margin-top: 24px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Modal fixture</h1>
+    <p>
+      Opening the dialog covers the page with its backdrop; only the dialog's
+      own Confirm button remains actionable.
+    </p>
+    <button id="open-dialog" data-testid="open-dialog">Open dialog</button>
+    <button id="underlying" data-testid="underlying">Underlying action</button>
+
+    <dialog id="confirm-dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <h2 id="dialog-title">Confirm changes</h2>
+      <p>This action cannot be undone.</p>
+      <button id="confirm-button" data-testid="confirm-button">Confirm</button>
+    </dialog>
+
+    <p id="status" role="status">Nothing happened yet</p>
+
+    <script>
+      const status = document.getElementById("status");
+      const dialog = document.getElementById("confirm-dialog");
+
+      function setStatus(message) {
+        status.textContent = message;
+      }
+
+      document
+        .getElementById("open-dialog")
+        .addEventListener("click", () => dialog.showModal());
+
+      document
+        .getElementById("underlying")
+        .addEventListener("click", () => setStatus("Underlying action clicked"));
+
+      document.getElementById("confirm-button").addEventListener("click", () => {
+        dialog.close();
+        setStatus("Confirmed");
+      });
+
+      dialog.addEventListener("close", () => {
+        if (status.textContent === "Nothing happened yet") {
+          setStatus("Dialog closed");
+        }
+      });
+    </script>
+  </body>
+</html>

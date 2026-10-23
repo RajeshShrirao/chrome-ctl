@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	maxMessageBytes = 1 << 20
+	// Media capture frames are base64 PNGs and can exceed 1 MiB on large displays.
+	maxMessageBytes = 16 << 20
 	writeTimeout    = 5 * time.Second
 )
 
@@ -59,6 +60,8 @@ type daemon struct {
 	mu      sync.Mutex
 	conn    *extensionConn
 	pending map[string]chan protocol.Response
+	rec     recorder
+	macro   macroRecorder
 
 	httpSrv *http.Server
 }
@@ -132,6 +135,7 @@ func (d *daemon) serve(ctx context.Context, ln net.Listener) error {
 
 func (d *daemon) shutdown() {
 	d.log.Printf("daemon: shutting down")
+	d.closeLocal()
 	d.closeExtension(websocket.CloseGoingAway, "daemon shutting down")
 	if d.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

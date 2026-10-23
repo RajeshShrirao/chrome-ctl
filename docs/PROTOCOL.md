@@ -401,6 +401,33 @@ Controls 2 FPS WebM recording or contact sheet grid generation.
 
 ---
 
+### 3.6 Resilient Targets & Macro Replay
+
+`page.describe` and `page.resolve` expose the multi-tier selector engine used by macros.
+
+#### `page.describe`
+* **Params:** `{ "tabId"?: 4, "id": 12 }`
+* **Result:** `{ "target": { "testId"?: "...", "ariaLabel"?: "...", "role"?: "button", "text"?: "...", "tag"?: "button", "type"?: "...", "xpath"?: "...", "cssSelector"?: "..." } }`
+* Resolves `id` against the latest snapshot index; returns `-32001` when the element is gone.
+
+#### `page.resolve`
+* **Params:** `{ "tabId"?: 4, "target": { ... }, "timeoutMs"?: 3000 }`
+* **Result:** `{ "id": 12, "tag": "button", "type": "", "label": "Continue", "x": 410, "y": 650, "w": 120, "h": 36, "matchedTier": "ariaLabel" }`
+* Tiers are attempted in order: `testId`, `ariaLabel` (+`role`), `text`, `xpath`, `cssSelector`. Polls every 150 ms until `timeoutMs` (default 3000, max 15000). The returned `id` can be passed to `action.click`, `action.type`, or `action.upload`.
+
+Macro methods are handled by the daemon itself and replayed locally.
+
+| Method | Params | Result |
+| :--- | :--- | :--- |
+| `macro.start` | `{ "name": "lead_search" }` | `{ "name", "started": true, "steps": 0 }` |
+| `macro.save` | `{ "params"?: ["search_term"], "description"?: "..." }` | `{ "path", "name", "steps", "parameters" }` |
+| `macro.list` | `{}` | `{ "macros": [{ "name", "description", "parameters", "steps", "modifiedAt" }] }` |
+| `macro.run` | `{ "name": "lead_search", "vars": { "search_term": "Design Studios" } }` | `{ "macro", "stepsRun", "durationMs", "completed": true }` |
+
+When replay cannot resolve or perform a step, `macro.run` fails with code `-32008` and data `{ "status": "macro_step_failed", "macro", "failed_step_id", "reason", "current_snapshot", "remaining_steps" }`.
+
+---
+
 ## 4. Error Code Reference
 
 | Code | Name | Description |
@@ -413,3 +440,4 @@ Controls 2 FPS WebM recording or contact sheet grid generation.
 | **`-32005`** | `SSO_TIMEOUT` | No Google OAuth popup was detected or completed within the timeout limit. |
 | **`-32006`** | `AUTH_UNAUTHORIZED` | Invalid or missing security token during handshake. |
 | **`-32007`** | `NAVIGATION_FAILED` | Target URL failed to resolve, DNS error, or connection reset. |
+| **`-32008`** | `MACRO_STEP_FAILED` | A macro step could not resolve or perform its target; data carries a fresh snapshot. |

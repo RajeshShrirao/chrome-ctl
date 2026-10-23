@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nested iframes fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 32px;
+      }
+      button {
+        padding: 8px 14px;
+        margin: 6px 0;
+      }
+      #outer-frame {
+        display: block;
+        width: 520px;
+        height: 260px;
+        margin-top: 16px;
+        border: 2px solid #2f6feb;
+      }
+      #status {
+        margin-top: 16px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Nested iframes fixture</h1>
+    <p>
+      Outer and inner frames are same-origin <code>srcdoc</code> documents, so
+      snapshot and targeting can reach the inner button.
+    </p>
+    <button id="top-button" data-testid="top-button">Top page action</button>
+    <iframe
+      id="outer-frame"
+      title="Outer frame"
+      srcdoc="
+        <!doctype html>
+        <html>
+          <head>
+            <style>
+              body { font-family: system-ui, sans-serif; margin: 16px; }
+              button { padding: 6px 12px; margin: 6px 0; }
+              #inner-frame { display: block; width: 360px; height: 120px; margin-top: 10px; border: 1px dashed #666; }
+            </style>
+          </head>
+          <body>
+            <button id='outer-button' data-testid='outer-button'>Outer frame action</button>
+            <iframe
+              id='inner-frame'
+              title='Inner frame'
+              srcdoc=&quot;<button id='inner-button' data-testid='inner-button'>Inner frame action</button>&quot;
+            ></iframe>
+          </body>
+        </html>
+      "
+    ></iframe>
+    <p id="status" role="status">Frames loaded</p>
+  </body>
+</html>

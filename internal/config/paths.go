@@ -17,6 +17,8 @@ type Paths struct {
 	TokenFile string
 	PidFile   string
 	LogFile   string
+	MediaDir  string
+	MacrosDir string
 }
 
 func DefaultPaths() Paths {
@@ -34,6 +36,8 @@ func DefaultPaths() Paths {
 		TokenFile: filepath.Join(home, "auth_token"),
 		PidFile:   filepath.Join(home, "daemon.pid"),
 		LogFile:   filepath.Join(home, "daemon.log"),
+		MediaDir:  filepath.Join(home, "media"),
+		MacrosDir: filepath.Join(home, "macros"),
 	}
 }
 

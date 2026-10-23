@@ -68,9 +68,19 @@ check(
   `action.default_popup must reference an existing dist file (got ${String(popup)})`,
 );
 
+const contentScripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];
+const indexerScript = contentScripts[0];
 check(
-  !("content_scripts" in manifest),
-  "content_scripts must not be declared in Phase 1",
+  contentScripts.length === 1 &&
+    Array.isArray(indexerScript?.matches) &&
+    indexerScript.matches.includes("<all_urls>") &&
+    Array.isArray(indexerScript?.js) &&
+    indexerScript.js.includes("content/indexer.js"),
+  'content_scripts must declare content/indexer.js for "<all_urls>"',
+);
+check(
+  await fileExists(path.join(dist, "content", "indexer.js")),
+  "dist/content/indexer.js is missing",
 );
 
 check(
@@ -91,5 +101,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-  "verify: OK (manifest v3, exact permissions, module service worker, popup, offscreen assets, no content scripts)",
+  "verify: OK (manifest v3, exact permissions, module service worker, popup, content script, offscreen assets)",
 );

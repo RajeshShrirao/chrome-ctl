@@ -8,14 +8,43 @@ const (
 	MethodSystemReady   = "system.ready"
 	MethodSystemPing    = "system.ping"
 	MethodSessionStatus = "session.status"
+	MethodTabList       = "tab.list"
+	MethodTabOpen       = "tab.open"
+	MethodTabSwitch     = "tab.switch"
+	MethodPageSnap      = "page.snap"
+	MethodPageRead      = "page.read"
+	MethodPageWait      = "page.wait"
+	MethodActionClick   = "action.click"
+	MethodActionType    = "action.type"
+	MethodActionPress   = "action.press"
+	MethodActionScroll  = "action.scroll"
+	MethodActionUpload  = "action.upload"
+	MethodMediaShot     = "media.shot"
+	MethodMediaRecStart = "media.rec_start"
+	MethodMediaRecStop  = "media.rec_stop"
+	MethodMediaCapture  = "media.capture"
+	MethodAuthSSO       = "auth.sso"
+	MethodPageDescribe  = "page.describe"
+	MethodPageResolve   = "page.resolve"
+	MethodMacroStart    = "macro.start"
+	MethodMacroSave     = "macro.save"
+	MethodMacroList     = "macro.list"
+	MethodMacroRun      = "macro.run"
 )
 
 const (
-	ErrConnection     = -32000
-	ErrMethodNotFound = -32601
-	ErrInvalidRequest = -32600
-	ErrInternal       = -32603
-	ErrUnauthorized   = -32006
+	ErrConnection             = -32000
+	ErrElementNotFound        = -32001
+	ErrElementNotInteractable = -32002
+	ErrTabNotFound            = -32003
+	ErrDebuggerDetached       = -32004
+	ErrSSOTimeout             = -32005
+	ErrUnauthorized           = -32006
+	ErrNavigationFailed       = -32007
+	ErrMacroStepFailed        = -32008
+	ErrMethodNotFound         = -32601
+	ErrInvalidRequest         = -32600
+	ErrInternal               = -32603
 )
 
 type Request struct {
@@ -73,6 +102,386 @@ type PingParams struct {
 type PongResult struct {
 	Status    string `json:"status"`
 	Timestamp int64  `json:"timestamp"`
+}
+
+type TabListParams struct {
+	WindowID *int `json:"windowId,omitempty"`
+}
+
+type TabInfo struct {
+	TabID  int    `json:"tabId"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+	Active bool   `json:"active"`
+}
+
+type TabListResult struct {
+	Tabs []TabInfo `json:"tabs"`
+}
+
+type TabOpenParams struct {
+	URL    string `json:"url"`
+	NewTab bool   `json:"newTab,omitempty"`
+}
+
+type TabOpenResult struct {
+	TabID  int    `json:"tabId"`
+	URL    string `json:"url"`
+	Title  string `json:"title"`
+	Loaded bool   `json:"loaded"`
+}
+
+type TabSwitchParams struct {
+	TabID int `json:"tabId"`
+}
+
+type TabSwitchResult struct {
+	Success     bool `json:"success"`
+	ActiveTabID int  `json:"activeTabId"`
+}
+
+type PageSnapParams struct {
+	TabID     *int `json:"tabId,omitempty"`
+	All       bool `json:"all,omitempty"`
+	FormsOnly bool `json:"formsOnly,omitempty"`
+}
+
+type ViewportInfo struct {
+	ScrollY        int `json:"scrollY"`
+	ViewportHeight int `json:"viewportHeight"`
+	TotalHeight    int `json:"totalHeight"`
+	Percent        int `json:"percent"`
+}
+
+type SnapElement struct {
+	ID    int    `json:"id"`
+	Tag   string `json:"tag"`
+	Type  string `json:"type"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+	State string `json:"state"`
+	X     int    `json:"x"`
+	Y     int    `json:"y"`
+	W     int    `json:"w"`
+	H     int    `json:"h"`
+}
+
+type SnapResult struct {
+	TabID         int           `json:"tabId"`
+	Title         string        `json:"title"`
+	URL           string        `json:"url"`
+	Viewport      ViewportInfo  `json:"viewport"`
+	Elements      []SnapElement `json:"elements"`
+	FormattedText string        `json:"formattedText"`
+}
+
+type PageReadParams struct {
+	TabID    *int   `json:"tabId,omitempty"`
+	ID       *int   `json:"id,omitempty"`
+	Selector string `json:"selector,omitempty"`
+}
+
+type PageReadResult struct {
+	Markdown string `json:"markdown"`
+}
+
+type ActionClickParams struct {
+	TabID       *int `json:"tabId,omitempty"`
+	ID          int  `json:"id"`
+	DoubleClick bool `json:"doubleClick,omitempty"`
+	Snap        bool `json:"snap,omitempty"`
+}
+
+type ActionTarget struct {
+	ID    int    `json:"id"`
+	Tag   string `json:"tag"`
+	Label string `json:"label"`
+}
+
+type ActionCoordinates struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+}
+
+type ActionClickResult struct {
+	Success     bool              `json:"success"`
+	Action      string            `json:"action"`
+	Target      ActionTarget      `json:"target"`
+	Coordinates ActionCoordinates `json:"coordinates"`
+	DurationMs  int               `json:"durationMs"`
+	Snapshot    *SnapResult       `json:"snapshot,omitempty"`
+}
+
+type ActionTypeParams struct {
+	TabID    *int     `json:"tabId,omitempty"`
+	ID       int      `json:"id"`
+	Text     string   `json:"text"`
+	Enter    bool     `json:"enter,omitempty"`
+	TypoRate *float64 `json:"typoRate,omitempty"`
+	Snap     bool     `json:"snap,omitempty"`
+}
+
+type ActionTypeResult struct {
+	Success       bool        `json:"success"`
+	CharsTyped    int         `json:"charsTyped"`
+	DurationMs    int         `json:"durationMs"`
+	TyposInjected int         `json:"typosInjected"`
+	StateDelta    string      `json:"stateDelta,omitempty"`
+	Snapshot      *SnapResult `json:"snapshot,omitempty"`
+}
+
+type ActionPressParams struct {
+	TabID     *int     `json:"tabId,omitempty"`
+	Key       string   `json:"key"`
+	Modifiers []string `json:"modifiers,omitempty"`
+}
+
+type ActionPressResult struct {
+	Success bool   `json:"success"`
+	Key     string `json:"key"`
+}
+
+type ActionScrollParams struct {
+	TabID     *int    `json:"tabId,omitempty"`
+	Direction string  `json:"direction"`
+	Amount    float64 `json:"amount"`
+}
+
+type ActionScrollResult struct {
+	ScrolledPixels  int `json:"scrolledPixels"`
+	NewScrollY      int `json:"newScrollY"`
+	ViewportPercent int `json:"viewportPercent"`
+}
+
+type ActionUploadParams struct {
+	TabID    *int   `json:"tabId,omitempty"`
+	ID       int    `json:"id"`
+	FilePath string `json:"filePath"`
+}
+
+type ActionUploadResult struct {
+	Success  bool   `json:"success"`
+	FileName string `json:"fileName"`
+	FileSize int64  `json:"fileSize"`
+}
+
+type PageWaitParams struct {
+	TabID     *int   `json:"tabId,omitempty"`
+	Selector  string `json:"selector,omitempty"`
+	Idle      bool   `json:"idle,omitempty"`
+	TimeoutMs int    `json:"timeoutMs,omitempty"`
+}
+
+type PageWaitResult struct {
+	WaitedMs int  `json:"waitedMs"`
+	Matched  bool `json:"matched"`
+}
+
+type MediaShotParams struct {
+	Som        bool   `json:"som,omitempty"`
+	Gray       bool   `json:"gray,omitempty"`
+	Quality    int    `json:"quality,omitempty"`
+	MaxWidth   int    `json:"maxWidth,omitempty"`
+	OutputPath string `json:"outputPath,omitempty"`
+}
+
+type MediaShotResult struct {
+	Path          string `json:"path"`
+	FileSizeBytes int64  `json:"fileSizeBytes"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
+	SomBadgeCount int    `json:"somBadgeCount"`
+	Gray          bool   `json:"gray"`
+}
+
+type MediaRecStartParams struct {
+	FPS int `json:"fps,omitempty"`
+}
+
+type MediaRecStartResult struct {
+	Started bool `json:"started"`
+	FPS     int  `json:"fps"`
+	TabID   int  `json:"tabId"`
+}
+
+type MediaRecStopParams struct {
+	Grid       bool   `json:"grid,omitempty"`
+	OutputPath string `json:"outputPath,omitempty"`
+}
+
+type MediaRecStopResult struct {
+	Path           string `json:"path"`
+	Format         string `json:"format"`
+	FramesCaptured int    `json:"framesCaptured"`
+	GridDimensions string `json:"gridDimensions,omitempty"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	FileSizeBytes  int64  `json:"fileSizeBytes"`
+	DurationMs     int64  `json:"durationMs"`
+}
+
+// MediaCapture is the extension-facing half of the media pipeline: one raw
+// PNG of the visible viewport plus the element boxes needed for SoM badges.
+type MediaCaptureParams struct {
+	TabID           *int `json:"tabId,omitempty"`
+	IncludeElements bool `json:"includeElements,omitempty"`
+}
+
+type MediaCaptureResult struct {
+	TabID            int           `json:"tabId"`
+	PNGBase64        string        `json:"pngBase64"`
+	ViewportWidth    int           `json:"viewportWidth"`
+	ViewportHeight   int           `json:"viewportHeight"`
+	DevicePixelRatio float64       `json:"devicePixelRatio,omitempty"`
+	Elements         []SnapElement `json:"elements,omitempty"`
+}
+
+// MacroTarget is the multi-tier resilient selector captured for an element.
+// Tiers are attempted in this order: TestID, Role+AriaLabel, Text, XPath, CSS.
+type MacroTarget struct {
+	TestID      string `json:"testId,omitempty"`
+	AriaLabel   string `json:"ariaLabel,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Text        string `json:"text,omitempty"`
+	Tag         string `json:"tag,omitempty"`
+	Type        string `json:"type,omitempty"`
+	XPath       string `json:"xpath,omitempty"`
+	CSSSelector string `json:"cssSelector,omitempty"`
+}
+
+type PageDescribeParams struct {
+	TabID *int `json:"tabId,omitempty"`
+	ID    int  `json:"id"`
+}
+
+type PageDescribeResult struct {
+	Target MacroTarget `json:"target"`
+}
+
+type PageResolveParams struct {
+	TabID     *int        `json:"tabId,omitempty"`
+	Target    MacroTarget `json:"target"`
+	TimeoutMs int         `json:"timeoutMs,omitempty"`
+}
+
+type PageResolveResult struct {
+	ID          int    `json:"id"`
+	Tag         string `json:"tag"`
+	Type        string `json:"type"`
+	Label       string `json:"label"`
+	X           int    `json:"x"`
+	Y           int    `json:"y"`
+	W           int    `json:"w"`
+	H           int    `json:"h"`
+	MatchedTier string `json:"matchedTier"`
+}
+
+type AuthSSOParams struct {
+	Account   string `json:"account,omitempty"`
+	TimeoutMs int    `json:"timeoutMs,omitempty"`
+}
+
+type AuthSSOResult struct {
+	Success           bool   `json:"success"`
+	SelectedAccount   string `json:"selectedAccount"`
+	RedirectCompleted bool   `json:"redirectCompleted"`
+	ParentTabURL      string `json:"parentTabUrl"`
+}
+
+// MacroStep is one recorded action. Field names follow docs/MACRO_SCHEMA.md.
+type MacroStep struct {
+	StepID      int               `json:"step_id"`
+	Description string            `json:"description,omitempty"`
+	Action      string            `json:"action"`
+	Target      *MacroTarget      `json:"target,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Value       string            `json:"value,omitempty"`
+	Options     *MacroStepOptions `json:"options,omitempty"`
+	OnFailure   string            `json:"on_failure,omitempty"`
+	Condition   string            `json:"condition,omitempty"`
+}
+
+type MacroStepOptions struct {
+	Enter     bool     `json:"enter,omitempty"`
+	Double    bool     `json:"double,omitempty"`
+	Direction string   `json:"direction,omitempty"`
+	Amount    float64  `json:"amount,omitempty"`
+	Modifiers []string `json:"modifiers,omitempty"`
+}
+
+type MacroParameter struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required"`
+	Default     string `json:"default,omitempty"`
+}
+
+// MacroFile is the persisted playbook written to ~/.chrome-ctl/macros.
+type MacroFile struct {
+	Schema       string           `json:"$schema,omitempty"`
+	MacroVersion string           `json:"macro_version"`
+	Name         string           `json:"name"`
+	Description  string           `json:"description,omitempty"`
+	CreatedAt    string           `json:"created_at,omitempty"`
+	Parameters   []MacroParameter `json:"parameters"`
+	Steps        []MacroStep      `json:"steps"`
+}
+
+type MacroStartParams struct {
+	Name string `json:"name"`
+}
+
+type MacroStartResult struct {
+	Name    string `json:"name"`
+	Started bool   `json:"started"`
+	Steps   int    `json:"steps"`
+}
+
+type MacroSaveParams struct {
+	Params      []string `json:"params,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+type MacroSaveResult struct {
+	Path       string   `json:"path"`
+	Name       string   `json:"name"`
+	Steps      int      `json:"steps"`
+	Parameters []string `json:"parameters"`
+}
+
+type MacroSummary struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Parameters  []string `json:"parameters"`
+	Steps       int      `json:"steps"`
+	ModifiedAt  string   `json:"modifiedAt"`
+}
+
+type MacroListResult struct {
+	Macros []MacroSummary `json:"macros"`
+}
+
+type MacroRunParams struct {
+	Name string            `json:"name"`
+	Vars map[string]string `json:"vars,omitempty"`
+}
+
+type MacroRunResult struct {
+	Macro      string `json:"macro"`
+	StepsRun   int    `json:"stepsRun"`
+	DurationMs int64  `json:"durationMs"`
+	Completed  bool   `json:"completed"`
+}
+
+// MacroStepFailure is attached as RPC error data when replay stops.
+type MacroStepFailure struct {
+	Status          string `json:"status"`
+	Macro           string `json:"macro"`
+	FailedStepID    int    `json:"failed_step_id"`
+	Reason          string `json:"reason"`
+	CurrentSnapshot string `json:"current_snapshot"`
+	RemainingSteps  int    `json:"remaining_steps"`
 }
 
 func Success(id *string, result any) Response {

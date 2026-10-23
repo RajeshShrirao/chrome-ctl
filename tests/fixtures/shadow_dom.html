@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Shadow DOM fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 32px;
+      }
+      button {
+        padding: 8px 14px;
+        margin: 4px 0;
+      }
+      input {
+        padding: 6px 8px;
+        margin: 4px 0 12px;
+      }
+      #status {
+        margin-top: 24px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Shadow DOM fixture</h1>
+    <p>
+      The open shadow root below contains a labelled input, a button, and a
+      nested open shadow root with its own button.
+    </p>
+    <div id="shadow-host"></div>
+    <p id="status" role="status">No clicks yet</p>
+
+    <script>
+      const status = document.getElementById("status");
+
+      function setStatus(message) {
+        status.textContent = message;
+      }
+
+      const host = document.getElementById("shadow-host");
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = `
+        <style>
+          :host { display: block; border: 2px solid #2f6feb; padding: 16px; }
+          label { display: block; font-weight: 600; }
+          #nested-host { margin-top: 16px; padding: 12px; border: 1px dashed #666; }
+        </style>
+        <label for="shadow-name">Display name</label>
+        <input id="shadow-name" aria-label="Display name" placeholder="Ada Lovelace" />
+        <button id="shadow-save" data-testid="shadow-save">Save profile</button>
+        <div id="nested-host"></div>
+      `;
+
+      const nestedHost = root.querySelector("#nested-host");
+      const nestedRoot = nestedHost.attachShadow({ mode: "open" });
+      nestedRoot.innerHTML = `
+        <style>
+          :host { display: block; }
+          button { background: #123c8c; color: #fff; }
+        </style>
+        <button id="deep-action" data-testid="deep-action">Deep action</button>
+      `;
+
+      root
+        .querySelector("#shadow-save")
+        .addEventListener("click", () => setStatus("Profile saved"));
+      nestedRoot
+        .querySelector("#deep-action")
+        .addEventListener("click", () => setStatus("Deep action clicked"));
+    </script>
+  </body>
+</html>

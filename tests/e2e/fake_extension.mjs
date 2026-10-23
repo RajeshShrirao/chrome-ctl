@@ -72,18 +72,226 @@ ws.onmessage = (event) => {
     return;
   }
 
-  if (message.method === "session.status" && message.id != null) {
+  if (message.id == null) {
+    return;
+  }
+
+  const result = handle(message.method, message.params ?? {});
+  if (result !== undefined && result.__rpcError === true) {
+    console.log("HANDLED", message.method, "-> error", result.code);
     send({
       jsonrpc: "2.0",
       id: message.id,
-      result: {
+      error: { code: result.code, message: result.message, data: result.data },
+    });
+    return;
+  }
+  if (result === undefined) {
+    console.log("HANDLED", message.method, "-> method not found");
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      error: { code: -32601, message: "method not found" },
+    });
+    return;
+  }
+  console.log("HANDLED", message.method);
+  send({ jsonrpc: "2.0", id: message.id, result });
+};
+
+function makeTab(id) {
+  return {
+    tabId: id,
+    title: id === 1 ? "Fake Tab" : `Fake Tab ${id}`,
+    url: id === 1 ? "https://example.test" : `https://example.test/${id}`,
+    active: id === 1,
+  };
+}
+
+// A 320x180 slate PNG; small enough to inline, large enough for the daemon's
+// Set-of-Mark badges to land inside the image.
+const SCREENSHOT_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAABlElEQVR42u3TAQkAAAzDsHm5gWu4f1HXMQhEQaGZPaBUJAADAwYGDAwGBgwMGBgwMBgYMDBgYDAwYGDAwICBwcCAgQEDAwYGAwMGBgwMBgYMDBgYMDAYGDAwYGDAwGBgwMCAgcHAgIEBAwMGBgMDBgYMDAZWAQwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMGBgMDBgYMDAYGDAwYGDAwGBgwMCAgQEDg4EBAwMGBgMDBgYMDBgYDAwYGDAwGBgwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMGBgMDBgYMDAYGDAwICBAQODgQEDAwYGDAwGBgwMGBgMDBgYMDBgYDAwYGDAwGBgwMCAgQEDg4EBAwMGBgwMBgYMDBgYDAwYGDAwYGAwMGBgwMCAgcHAgIEBA4OBAQMDBgYMDAYGDAwYGAysAhgYMDBgYDAwYGDAwICBwcCAgQEDg4EBAwMGBgwMBgYMDBgYMDAYGDAwYGAwMGBgwMCAgcHAgIEBAwMGhm4PCcL8nyxcCooAAAAASUVORK5CYII=";
+
+function captureResult(includeElements) {
+  return {
+    tabId: 1,
+    pngBase64: SCREENSHOT_PNG,
+    viewportWidth: 1280,
+    viewportHeight: 720,
+    devicePixelRatio: 1,
+    elements: includeElements ? snapResult(false).elements : undefined,
+  };
+}
+
+function snapResult(formsOnly) {
+  return {
+    tabId: 1,
+    title: "Fake Tab",
+    url: "https://example.test",
+    viewport: { scrollY: 0, viewportHeight: 900, totalHeight: 4200, percent: 21 },
+    elements: formsOnly
+      ? [
+          {
+            id: 1,
+            tag: "input",
+            type: "text",
+            label: "Search",
+            value: "",
+            state: "",
+            x: 10,
+            y: 20,
+            w: 200,
+            h: 32,
+          },
+        ]
+      : [
+          {
+            id: 1,
+            tag: "input",
+            type: "text",
+            label: "Search",
+            value: "",
+            state: "",
+            x: 10,
+            y: 20,
+            w: 200,
+            h: 32,
+          },
+          {
+            id: 2,
+            tag: "button",
+            type: "",
+            label: "Go",
+            value: "",
+            state: "",
+            x: 40,
+            y: 60,
+            w: 80,
+            h: 32,
+          },
+        ],
+    formattedText: formsOnly
+      ? 'TAB [1] Fake Tab | https://example.test\nVIEWPORT: 0-900px of 4200px (21%)\n[1] <input:text> "Search" () @10,20'
+      : 'TAB [1] Fake Tab | https://example.test\nVIEWPORT: 0-900px of 4200px (21%)\n[1] <input:text> "Search" () @10,20\n[2] <button> "Go" @40,60',
+  };
+}
+
+function fail(code, message, data) {
+  return { __rpcError: true, code, message, data };
+}
+
+function handle(method, params) {
+  switch (method) {
+    case "session.status":
+      return {
         activeTab: { tabId: 1, title: "Fake Tab", url: "https://example.test" },
         tabCount,
         debuggerAttached: false,
-      },
-    });
+      };
+    case "tab.list":
+      return { tabs: Array.from({ length: tabCount }, (_, index) => makeTab(index + 1)) };
+    case "tab.open":
+      return { tabId: 1, url: params.url, title: "Opened Page", loaded: true };
+    case "tab.switch":
+      return { success: true, activeTabId: params.tabId };
+    case "page.snap":
+      return snapResult(params.formsOnly);
+    case "page.read":
+      return {
+        markdown: `# Fake Heading\n\nRequested: ${params.id ?? params.selector ?? "page"}`,
+      };
+    case "action.click": {
+      const result = {
+        success: true,
+        action: "click",
+        target: { id: params.id, tag: "button", label: "Go" },
+        coordinates: { x: 40, y: 60 },
+        durationMs: 340,
+      };
+      if (params.snap === true) {
+        result.snapshot = snapResult(false);
+      }
+      return result;
+    }
+    case "action.type": {
+      const result = {
+        success: true,
+        charsTyped: String(params.text ?? "").length,
+        durationMs: 1250,
+        typosInjected: 1,
+        stateDelta: '[6] <button:submit> "Send" is now (enabled)',
+      };
+      if (params.snap === true) {
+        result.snapshot = snapResult(false);
+      }
+      return result;
+    }
+    case "action.press":
+      return { success: true, key: params.key };
+    case "action.scroll":
+      return { scrolledPixels: 720, newScrollY: 720, viewportPercent: 17 };
+    case "action.upload":
+      return {
+        success: true,
+        fileName: String(params.filePath ?? "").split(/[/\\]/).pop(),
+        fileSize: 0,
+      };
+    case "page.wait":
+      return { waitedMs: 1200, matched: true };
+    case "media.capture":
+      return captureResult(params.includeElements === true);
+    case "page.describe": {
+      const el = snapResult(false).elements.find((item) => item.id === params.id);
+      if (!el) {
+        return fail(-32001, `element [${params.id}] not found in the current snapshot`);
+      }
+      return {
+        target: {
+          ariaLabel: el.label,
+          text: el.label,
+          tag: el.tag,
+          type: el.type || undefined,
+          cssSelector: `#element-${el.id}`,
+        },
+      };
+    }
+    case "page.resolve": {
+      const target = params.target ?? {};
+      if (target.testId === "missing" || target.ariaLabel === "Missing") {
+        return fail(-32001, `element "${target.ariaLabel ?? target.testId}" not found in DOM`);
+      }
+      const match =
+        snapResult(false).elements.find(
+          (item) => item.label === target.ariaLabel || item.label === target.text,
+        ) ?? snapResult(false).elements[0];
+      return {
+        id: match.id,
+        tag: match.tag,
+        type: match.type,
+        label: match.label,
+        x: match.x,
+        y: match.y,
+        w: match.w,
+        h: match.h,
+        matchedTier: target.testId ? "testId" : "ariaLabel",
+      };
+    }
+    case "auth.sso": {
+      if (params.account === "timeout@example.test") {
+        return fail(-32005, "SSO timeout: no Google OAuth popup detected");
+      }
+      return {
+        success: true,
+        selectedAccount: params.account || "default@example.test",
+        redirectCompleted: true,
+        parentTabUrl: "https://example.test/after-sso",
+      };
+    }
+    default:
+      return undefined;
   }
-};
+}
 
 ws.onclose = () => {
   clearInterval(heartbeat);
