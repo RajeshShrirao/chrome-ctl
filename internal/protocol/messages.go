@@ -8,6 +8,11 @@ const (
 	MethodSystemReady   = "system.ready"
 	MethodSystemPing    = "system.ping"
 	MethodSessionStatus = "session.status"
+	MethodWindowList    = "window.list"
+	MethodWindowCreate  = "window.create"
+	MethodWindowEnsure  = "window.ensure"
+	MethodWindowUse     = "window.use"
+	MethodWindowClose   = "window.close"
 	MethodTabList       = "tab.list"
 	MethodTabOpen       = "tab.open"
 	MethodTabSwitch     = "tab.switch"
@@ -108,6 +113,57 @@ type TabListParams struct {
 	WindowID *int `json:"windowId,omitempty"`
 }
 
+type WindowInfo struct {
+	WindowID   int    `json:"windowId"`
+	Focused    bool   `json:"focused"`
+	State      string `json:"state"`
+	TabCount   int    `json:"tabCount"`
+	Automation bool   `json:"automation"`
+}
+
+type WindowListResult struct {
+	Windows []WindowInfo `json:"windows"`
+}
+
+// WindowCreateParams is shared by window.create and window.ensure. Focused
+// defaults to false so the user's current window keeps keyboard focus.
+type WindowCreateParams struct {
+	URL     string `json:"url,omitempty"`
+	Focused bool   `json:"focused,omitempty"`
+}
+
+type WindowResult struct {
+	WindowID    int  `json:"windowId"`
+	ActiveTabID int  `json:"activeTabId"`
+	TabCount    int  `json:"tabCount"`
+	Focused     bool `json:"focused"`
+	Created     bool `json:"created"`
+}
+
+// WindowUseParams selects the automation window. Focused targets the window the
+// user is currently using; no fields clears the selection.
+type WindowUseParams struct {
+	WindowID *int `json:"windowId,omitempty"`
+	Focused  bool `json:"focused,omitempty"`
+}
+
+type WindowUseResult struct {
+	WindowID    *int `json:"windowId,omitempty"`
+	ActiveTabID int  `json:"activeTabId,omitempty"`
+	TabCount    int  `json:"tabCount,omitempty"`
+	Focused     bool `json:"focused,omitempty"`
+	Cleared     bool `json:"cleared,omitempty"`
+}
+
+type WindowCloseParams struct {
+	WindowID int `json:"windowId"`
+}
+
+type WindowCloseResult struct {
+	Success  bool `json:"success"`
+	WindowID int  `json:"windowId"`
+}
+
 type TabInfo struct {
 	TabID  int    `json:"tabId"`
 	Title  string `json:"title"`
@@ -120,8 +176,9 @@ type TabListResult struct {
 }
 
 type TabOpenParams struct {
-	URL    string `json:"url"`
-	NewTab bool   `json:"newTab,omitempty"`
+	URL      string `json:"url"`
+	NewTab   bool   `json:"newTab,omitempty"`
+	WindowID *int   `json:"windowId,omitempty"`
 }
 
 type TabOpenResult struct {

@@ -20,6 +20,9 @@ func TestForwardTimeoutFor(t *testing.T) {
 		{protocol.MethodActionPress, actionPressTimeout},
 		{protocol.MethodPageWait, pageWaitTimeout},
 		{protocol.MethodPageSnap, fallback},
+		{protocol.MethodWindowCreate, windowCreateTimeout},
+		{protocol.MethodWindowEnsure, windowCreateTimeout},
+		{protocol.MethodWindowList, fallback},
 		{protocol.MethodSessionStatus, fallback},
 	}
 

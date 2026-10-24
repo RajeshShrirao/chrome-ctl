@@ -10,6 +10,7 @@ import (
 
 func newOpenCmd() *cobra.Command {
 	var newTab bool
+	var windowID int
 	cmd := &cobra.Command{
 		Use:   "open <url>",
 		Short: "Open a URL in the active tab or a new tab",
@@ -21,6 +22,9 @@ func newOpenCmd() *cobra.Command {
 			}
 
 			params := protocol.TabOpenParams{URL: url, NewTab: newTab}
+			if cmd.Flags().Changed("window") {
+				params.WindowID = &windowID
+			}
 			var result protocol.TabOpenResult
 			if err := callRPC(cmd, protocol.MethodTabOpen, params, &result); err != nil {
 				return err
@@ -30,6 +34,7 @@ func newOpenCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&newTab, "new", false, "Open the URL in a new tab")
+	cmd.Flags().IntVar(&windowID, "window", 0, "Target a specific window instead of the automation window")
 	return cmd
 }
 

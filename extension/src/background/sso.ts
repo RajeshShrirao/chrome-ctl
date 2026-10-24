@@ -10,6 +10,7 @@
 import { ErrorCodes } from "../shared/protocol.js";
 import type { AuthSsoResult } from "../shared/protocol.js";
 import { RpcFault } from "./faults.js";
+import { automationActiveTab, lastFocusedActiveTab } from "./windows.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 1_000;
@@ -214,15 +215,9 @@ async function findOAuthTab(): Promise<chrome.tabs.Tab | null> {
 }
 
 async function activeTabId(): Promise<number | undefined> {
-  try {
-    const [active] = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
-    });
-    return typeof active?.id === "number" ? active.id : undefined;
-  } catch {
-    return undefined;
-  }
+  const automation = await automationActiveTab();
+  const tab = automation ?? (await lastFocusedActiveTab());
+  return typeof tab?.id === "number" ? tab.id : undefined;
 }
 
 interface PopupState {

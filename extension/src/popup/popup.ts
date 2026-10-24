@@ -1,15 +1,14 @@
-import { TOKEN_KEY } from "../shared/protocol.js";
+import { TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
 import type { ConnState, RuntimeMessage, WsStatusReply } from "../shared/messages.js";
 
 const POLL_MS = 1_000;
 const NOTE_MS = 3_000;
-const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 
 const LABELS: Record<ConnState, string> = {
   connected: "Connected",
   connecting: "Connecting",
   disconnected: "Disconnected",
-  unconfigured: "Not configured",
+  unconfigured: "Waiting for daemon",
 };
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -26,6 +25,7 @@ const versionLine = byId<HTMLParagraphElement>("version");
 const errorLine = byId<HTMLParagraphElement>("error");
 const tokenInput = byId<HTMLInputElement>("token");
 const saveButton = byId<HTMLButtonElement>("save");
+const pairButton = byId<HTMLButtonElement>("pair");
 const reconnectButton = byId<HTMLButtonElement>("reconnect");
 const note = byId<HTMLParagraphElement>("note");
 
@@ -70,8 +70,9 @@ function setNote(text: string, ok = false): void {
 
 function render(status: WsStatusReply): void {
   lastStatus = status;
-  dot.className = `dot ${status.state}`;
-  statusText.textContent = LABELS[status.state];
+  const pairing = status.pairing === true && !status.tokenConfigured;
+  dot.className = `dot ${pairing ? "connecting" : status.state}`;
+  statusText.textContent = pairing ? "Pairing" : LABELS[status.state];
 
   if (status.daemonVersion) {
     versionLine.textContent = `Daemon v${status.daemonVersion}`;
@@ -149,6 +150,22 @@ async function bootstrap(): Promise<void> {
   }
 }
 
+async function pairNow(): Promise<void> {
+  setNote("Pairing...");
+  try {
+    const reply = await send<{ ok?: boolean }>({ target: "offscreen", type: "pair" });
+    if (reply.ok === true) {
+      setNote("Paired", true);
+      await sleep(250);
+      await poll();
+      return;
+    }
+    setNote("Daemon not reachable");
+  } catch {
+    setNote("Bridge unavailable");
+  }
+}
+
 async function saveToken(): Promise<void> {
   const value = tokenInput.value.trim();
   if (value.length === 0) {
@@ -186,6 +203,10 @@ async function reconnect(): Promise<void> {
 
 saveButton.addEventListener("click", () => {
   void saveToken();
+});
+
+pairButton.addEventListener("click", () => {
+  void pairNow();
 });
 
 reconnectButton.addEventListener("click", () => {

@@ -4,7 +4,7 @@ import type {
   ContentRequest,
   ContentResponse,
 } from "../shared/content.js";
-import { ErrorCodes, Methods, TOKEN_KEY } from "../shared/protocol.js";
+import { ErrorCodes, Methods, TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
 import type {
   ActionClickResult,
   ActionPressResult,
@@ -23,6 +23,11 @@ import type {
   TabListResult,
   TabOpenResult,
   TabSwitchResult,
+  WindowCloseResult,
+  WindowInfo,
+  WindowListResult,
+  WindowResult,
+  WindowUseResult,
 } from "../shared/protocol.js";
 import type { RuntimeMessage, TokenReply } from "../shared/messages.js";
 import {
@@ -37,6 +42,15 @@ import { describeCaptureError, stripPngDataUrl } from "./capture.js";
 import { handlePageDescribe, handlePageResolve } from "./resolver.js";
 import type { ResolverDeps } from "./resolver.js";
 import { sso } from "./sso.js";
+import {
+  activeTabIn,
+  automationActiveTab,
+  lastFocusedActiveTab,
+  lastFocusedWindowId,
+  liveAutomationWindowId,
+  readAutomationWindowId,
+  writeAutomationWindowId,
+} from "./windows.js";
 
 const OFFSCREEN_PATH = "offscreen/offscreen.html";
 const CONTENT_TIMEOUT_MS = 10_000;
@@ -167,8 +181,8 @@ function tabIdOf(tab: chrome.tabs.Tab): number {
   return tab.id;
 }
 
-/** Resolve an explicit tab id or the active tab of the last focused window. */
-async function resolveTab(tabId?: number): Promise<chrome.tabs.Tab> {
+/** Resolve an explicit tab id, an explicit window, the automation window, or the focused tab. */
+async function resolveTab(tabId?: number, windowId?: number): Promise<chrome.tabs.Tab> {
   if (typeof tabId === "number") {
     try {
       return await chrome.tabs.get(tabId);
@@ -177,7 +191,20 @@ async function resolveTab(tabId?: number): Promise<chrome.tabs.Tab> {
     }
   }
 
-  const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (typeof windowId === "number") {
+    const tab = await activeTabIn(windowId);
+    if (!tab) {
+      throw new Error(`window ${windowId} has no active tab`);
+    }
+    return tab;
+  }
+
+  const automationTab = await automationActiveTab();
+  if (automationTab) {
+    return automationTab;
+  }
+
+  const active = await lastFocusedActiveTab();
   if (!active) {
     throw new Error("no active tab found");
   }
@@ -347,7 +374,9 @@ function parseNavigationUrl(value: unknown): URL {
 }
 
 async function handleTabList(params: Record<string, unknown>): Promise<TabListResult> {
-  const windowId = typeof params.windowId === "number" ? params.windowId : undefined;
+  const requestedWindowId =
+    typeof params.windowId === "number" ? params.windowId : undefined;
+  const windowId = requestedWindowId ?? (await liveAutomationWindowId());
   const tabs = await chrome.tabs.query(
     windowId === undefined ? { lastFocusedWindow: true } : { windowId },
   );
@@ -363,12 +392,22 @@ async function handleTabList(params: Record<string, unknown>): Promise<TabListRe
 
 async function handleTabOpen(params: Record<string, unknown>): Promise<TabOpenResult> {
   const url = parseNavigationUrl(params.url);
+  const requestedWindowId =
+    typeof params.windowId === "number" ? params.windowId : undefined;
 
   let tab: chrome.tabs.Tab;
   if (params.newTab === true) {
-    tab = await chrome.tabs.create({ url: url.href, active: true });
+    const targetWindow = requestedWindowId ?? (await liveAutomationWindowId());
+    const createProperties: chrome.tabs.CreateProperties = {
+      url: url.href,
+      active: true,
+    };
+    if (targetWindow !== undefined) {
+      createProperties.windowId = targetWindow;
+    }
+    tab = await chrome.tabs.create(createProperties);
   } else {
-    const current = await resolveTab();
+    const current = await resolveTab(undefined, requestedWindowId);
     const updated = await chrome.tabs.update(tabIdOf(current), {
       url: url.href,
       active: true,
@@ -408,15 +447,152 @@ async function handleTabSwitch(params: Record<string, unknown>): Promise<TabSwit
     throw new Error(`tab ${tabId} not found`);
   }
 
-  if (typeof tab.windowId === "number") {
-    try {
-      await chrome.windows.update(tab.windowId, { focused: true });
-    } catch {
-      // Focusing the window is best-effort.
-    }
+  // Activating a tab never focuses its window, so the user's current window keeps focus.
+  // Implicit commands follow the tab into its window; otherwise they would keep
+  // reading whichever window was tracked before.
+  if (
+    typeof tab.windowId === "number" &&
+    tab.windowId !== (await liveAutomationWindowId())
+  ) {
+    await writeAutomationWindowId(tab.windowId);
+  }
+  return { success: true, activeTabId: tabId };
+}
+
+function windowSummary(
+  window: chrome.windows.Window,
+  automationId: number | undefined,
+): WindowInfo | null {
+  if (typeof window.id !== "number") {
+    return null;
+  }
+  return {
+    windowId: window.id,
+    focused: window.focused === true,
+    state: window.state ?? "normal",
+    tabCount: window.tabs?.length ?? 0,
+    automation: window.id === automationId,
+  };
+}
+
+async function handleWindowList(): Promise<WindowListResult> {
+  const automationId = await liveAutomationWindowId();
+  const windows = await chrome.windows.getAll({ populate: true });
+  return {
+    windows: windows
+      .map((window) => windowSummary(window, automationId))
+      .filter((window): window is WindowInfo => window !== null),
+  };
+}
+
+async function windowResult(windowId: number, created: boolean): Promise<WindowResult> {
+  let tabCount = 0;
+  let focused = false;
+  try {
+    const window = await chrome.windows.get(windowId, { populate: true });
+    tabCount = window.tabs?.length ?? 0;
+    focused = window.focused === true;
+  } catch {
+    // The window can vanish between creation and lookup; report what we know.
+  }
+  const active = await activeTabIn(windowId);
+  return {
+    windowId,
+    activeTabId: typeof active?.id === "number" ? active.id : 0,
+    tabCount,
+    focused,
+    created,
+  };
+}
+
+async function handleWindowCreate(
+  params: Record<string, unknown>,
+): Promise<WindowResult> {
+  const url =
+    typeof params.url === "string" && params.url.trim() !== ""
+      ? parseNavigationUrl(params.url).href
+      : undefined;
+  const focused = params.focused === true;
+
+  const created = await chrome.windows.create(
+    url === undefined
+      ? { focused, type: "normal" }
+      : { url, focused, type: "normal" },
+  );
+  const windowId = created?.id;
+  if (typeof windowId !== "number") {
+    throw new Error("Chrome did not return a window id");
   }
 
-  return { success: true, activeTabId: tabId };
+  await writeAutomationWindowId(windowId);
+
+  const active = await activeTabIn(windowId);
+  if (active && url !== undefined && active.status !== "complete") {
+    await waitForTabLoad(tabIdOf(active), TAB_LOAD_TIMEOUT_MS);
+  }
+  return windowResult(windowId, true);
+}
+
+async function handleWindowEnsure(): Promise<WindowResult> {
+  const existing = await liveAutomationWindowId();
+  if (existing !== undefined) {
+    return windowResult(existing, false);
+  }
+  return handleWindowCreate({});
+}
+
+async function handleWindowUse(
+  params: Record<string, unknown>,
+): Promise<WindowUseResult> {
+  const requestedWindowId =
+    typeof params.windowId === "number" ? params.windowId : undefined;
+
+  if (params.focused !== true && requestedWindowId === undefined) {
+    await writeAutomationWindowId(undefined);
+    return { cleared: true };
+  }
+
+  const windowId =
+    params.focused === true ? await lastFocusedWindowId() : requestedWindowId;
+  if (windowId === undefined) {
+    throw new Error("no focused window found");
+  }
+
+  let window: chrome.windows.Window;
+  try {
+    window = await chrome.windows.get(windowId, { populate: true });
+  } catch {
+    throw new Error(`window ${windowId} not found`);
+  }
+
+  await writeAutomationWindowId(windowId);
+  const active = await activeTabIn(windowId);
+  return {
+    windowId,
+    activeTabId: typeof active?.id === "number" ? active.id : 0,
+    tabCount: window.tabs?.length ?? 0,
+    focused: window.focused === true,
+  };
+}
+
+async function handleWindowClose(
+  params: Record<string, unknown>,
+): Promise<WindowCloseResult> {
+  const windowId = params.windowId;
+  if (typeof windowId !== "number") {
+    throw new Error("windowId is required");
+  }
+
+  try {
+    await chrome.windows.remove(windowId);
+  } catch {
+    throw new Error(`window ${windowId} not found`);
+  }
+
+  if ((await readAutomationWindowId()) === windowId) {
+    await writeAutomationWindowId(undefined);
+  }
+  return { success: true, windowId };
 }
 
 interface SnapRequestOptions {
@@ -689,14 +865,8 @@ async function handleMediaCapture(
     }
   }
 
-  if (typeof activeTab.windowId === "number") {
-    try {
-      await chrome.windows.update(activeTab.windowId, { focused: true });
-    } catch {
-      // Focusing is best-effort; an active tab is enough for captureVisibleTab.
-    }
-  }
-
+  // captureVisibleTab only needs an active tab in its window. Do not focus the
+  // window, so background capture never pulls focus away from the user.
   await ensureContentScriptInjected(tabId);
 
   const metricsResponse = await sendToContent(tabId, {
@@ -771,6 +941,16 @@ async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
     switch (request.method) {
       case Methods.sessionStatus:
         return { jsonrpc: "2.0", id, result: await buildStatus() };
+      case Methods.windowList:
+        return { jsonrpc: "2.0", id, result: await handleWindowList() };
+      case Methods.windowCreate:
+        return { jsonrpc: "2.0", id, result: await handleWindowCreate(params) };
+      case Methods.windowEnsure:
+        return { jsonrpc: "2.0", id, result: await handleWindowEnsure() };
+      case Methods.windowUse:
+        return { jsonrpc: "2.0", id, result: await handleWindowUse(params) };
+      case Methods.windowClose:
+        return { jsonrpc: "2.0", id, result: await handleWindowClose(params) };
       case Methods.tabList:
         return { jsonrpc: "2.0", id, result: await handleTabList(params) };
       case Methods.tabOpen:
@@ -844,6 +1024,18 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 
   if (message.type === "getToken") {
     void readToken().then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "pairToken") {
+    if (!TOKEN_PATTERN.test(message.token)) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    void chrome.storage.local
+      .set({ [TOKEN_KEY]: message.token })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 

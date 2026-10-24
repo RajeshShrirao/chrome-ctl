@@ -21,6 +21,7 @@ const (
 	pageDescribeTimeout = 5 * time.Second
 	pageResolveTimeout  = 20 * time.Second
 	authSSOTimeout      = 60 * time.Second
+	windowCreateTimeout = 30 * time.Second
 )
 
 // forwardTimeoutFor gives long-running actions a budget beyond the default
@@ -43,6 +44,8 @@ func forwardTimeoutFor(method string, fallback time.Duration) time.Duration {
 		return pageResolveTimeout
 	case protocol.MethodAuthSSO:
 		return authSSOTimeout
+	case protocol.MethodWindowCreate, protocol.MethodWindowEnsure:
+		return windowCreateTimeout
 	default:
 		return fallback
 	}

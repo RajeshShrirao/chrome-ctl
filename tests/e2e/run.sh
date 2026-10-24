@@ -49,6 +49,19 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN"
 CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/rpc")"
 [[ "$CODE" == "401" ]] || fail "unauthenticated /rpc returned $CODE, want 401"
 
+CLI_TOKEN="$(./bin/chrome-ctl token)"
+[[ "$CLI_TOKEN" == "$TOKEN" ]] || fail "token command printed the wrong token"
+
+CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/pair")"
+[[ "$CODE" == "403" ]] || fail "pairing without the header returned $CODE, want 403"
+CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "X-Chrome-Ctl-Pair: 1" -H "Origin: https://evil.test" "$BASE/pair")"
+[[ "$CODE" == "403" ]] || fail "pairing from a web origin returned $CODE, want 403"
+PAIR_BODY="$(curl -s -X POST -H "X-Chrome-Ctl-Pair: 1" \
+  -H "Origin: chrome-extension://abcdefghijklmnop" "$BASE/pair")"
+PAIR_TOKEN="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).token)' "$PAIR_BODY")"
+[[ "$PAIR_TOKEN" == "$TOKEN" ]] || fail "pairing returned a different token"
+
 node tests/e2e/fake_extension.mjs --addr "$CHROME_CTL_ADDR" --token "$TOKEN" --tabs 3 \
   >"$TMP/extension.log" 2>&1 &
 FAKE_PID=$!
@@ -87,6 +100,73 @@ grep -q "^OK: opened \[1\] Opened Page - https://example.test/new$" <<<"$OPEN_NE
 SWITCH="$(./bin/chrome-ctl switch 2)"
 echo "$SWITCH"
 grep -q "^OK: switched to tab \[2\]$" <<<"$SWITCH" || fail "switch output malformed"
+
+# Background automation window: created unfocused, reused, and never the user's window.
+WIN_CREATE="$(./bin/chrome-ctl window ensure 2>&1)" || fail "window ensure failed"
+echo "$WIN_CREATE"
+[[ "$WIN_CREATE" == "OK: created automation window [11] (tab [100], 1 tab, unfocused)" ]] \
+  || fail "window ensure (create) output malformed: $WIN_CREATE"
+
+WIN_REUSE="$(./bin/chrome-ctl window ensure 2>&1)" || fail "second window ensure failed"
+echo "$WIN_REUSE"
+[[ "$WIN_REUSE" == "OK: using automation window [11] (tab [100], 1 tab, unfocused)" ]] \
+  || fail "window ensure (reuse) output malformed: $WIN_REUSE"
+
+WIN_LIST="$(./bin/chrome-ctl window list 2>&1)" || fail "window list failed"
+echo "$WIN_LIST"
+grep -q "^\* \[10\] 3 tabs$" <<<"$WIN_LIST" || fail "window list did not mark the focused user window"
+grep -q "^  \[11\] 1 tab (automation)$" <<<"$WIN_LIST" || fail "window list did not mark the automation window"
+
+WIN_USE="$(./bin/chrome-ctl window use focused 2>&1)" || fail "window use focused failed"
+echo "$WIN_USE"
+[[ "$WIN_USE" == "OK: automation window is now [10] (tab [1], 3 tabs, focused)" ]] \
+  || fail "window use focused output malformed: $WIN_USE"
+
+WIN_BACK="$(./bin/chrome-ctl window use 11 2>&1)" || fail "window use 11 failed"
+echo "$WIN_BACK"
+[[ "$WIN_BACK" == "OK: automation window is now [11] (tab [100], 1 tab, unfocused)" ]] \
+  || fail "window use output malformed: $WIN_BACK"
+
+WIN_FG="$(./bin/chrome-ctl window new --foreground https://example.test/bg 2>&1)" || fail "window new --foreground failed"
+echo "$WIN_FG"
+[[ "$WIN_FG" == "OK: created automation window [12] (tab [101], 1 tab, focused)" ]] \
+  || fail "window new output malformed: $WIN_FG"
+grep -q "^\* \[12\] 1 tab (automation)$" <<<"$(./bin/chrome-ctl window list)" \
+  || fail "window list did not show the new focused automation window"
+
+WIN_CLEAR="$(./bin/chrome-ctl window clear 2>&1)" || fail "window clear failed"
+echo "$WIN_CLEAR"
+[[ "$WIN_CLEAR" == "OK: automation window cleared; commands use the focused window" ]] \
+  || fail "window clear output malformed: $WIN_CLEAR"
+WIN_LIST_CLEARED="$(./bin/chrome-ctl window list)"
+echo "$WIN_LIST_CLEARED"
+if grep -q "(automation)" <<<"$WIN_LIST_CLEARED"; then
+  fail "window list still flagged an automation window"
+fi
+
+set +e
+CLOSE_FOCUSED="$(./bin/chrome-ctl window close 12 2>&1)"
+RC=$?
+set -e
+echo "$CLOSE_FOCUSED"
+[[ "$RC" -eq 1 ]] || fail "closing the focused window exited $RC, want 1"
+grep -qi "pass --force" <<<"$CLOSE_FOCUSED" || fail "close did not refuse the focused window"
+
+WIN_FORCED="$(./bin/chrome-ctl window close 12 --force 2>&1)" || fail "window close --force failed"
+echo "$WIN_FORCED"
+[[ "$WIN_FORCED" == "OK: closed window [12]" ]] || fail "window close --force output malformed: $WIN_FORCED"
+
+WIN_CLOSED="$(./bin/chrome-ctl window close 11 2>&1)" || fail "closing an unfocused window failed"
+echo "$WIN_CLOSED"
+[[ "$WIN_CLOSED" == "OK: closed window [11]" ]] || fail "window close output malformed: $WIN_CLOSED"
+
+set +e
+WIN_MISSING="$(./bin/chrome-ctl window use 999 2>&1)"
+RC=$?
+set -e
+echo "$WIN_MISSING"
+[[ "$RC" -eq 1 ]] || fail "using a vanished window exited $RC, want 1"
+grep -qi "not found" <<<"$WIN_MISSING" || fail "using a vanished window did not report it"
 
 SNAP="$(./bin/chrome-ctl snap)"
 echo "$SNAP"

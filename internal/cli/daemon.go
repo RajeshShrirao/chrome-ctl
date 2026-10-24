@@ -57,8 +57,7 @@ func runForeground(cmd *cobra.Command, addr string, paths config.Paths) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
-	token, created, err := config.EnsureToken(paths.TokenFile)
-	if err != nil {
+	if _, _, err := config.EnsureToken(paths.TokenFile); err != nil {
 		return err
 	}
 
@@ -74,10 +73,8 @@ func runForeground(cmd *cobra.Command, addr string, paths config.Paths) error {
 	defer config.RemovePID(paths)
 
 	fmt.Fprintf(out, "Daemon: LISTENING (%s)\n", addr)
-	if created {
-		fmt.Fprintf(out, "Auth token: %s\n", token)
-	}
 	fmt.Fprintf(out, "Token file: %s\n", paths.TokenFile)
+	fmt.Fprintln(out, "Chrome extension: pairs automatically")
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -94,7 +91,7 @@ func startDaemon(cmd *cobra.Command, addr string, paths config.Paths) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
-	token, created, err := config.EnsureToken(paths.TokenFile)
+	token, _, err := config.EnsureToken(paths.TokenFile)
 	if err != nil {
 		return err
 	}
@@ -135,10 +132,8 @@ func startDaemon(cmd *cobra.Command, addr string, paths config.Paths) error {
 		pid = pidFromFile
 	}
 	fmt.Fprintf(out, "Daemon: STARTED (pid %d, %s)\n", pid, addr)
-	if created {
-		fmt.Fprintf(out, "Auth token: %s\n", token)
-	}
 	fmt.Fprintf(out, "Token file: %s\n", paths.TokenFile)
+	fmt.Fprintln(out, "Chrome extension: pairs automatically")
 	return nil
 }
 

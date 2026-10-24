@@ -1,12 +1,20 @@
 export const DAEMON_WS_URL = "ws://127.0.0.1:9229/ws";
+export const DAEMON_PAIR_URL = "http://127.0.0.1:9229/pair";
+export const PAIR_HEADER = "X-Chrome-Ctl-Pair";
 export const HEARTBEAT_MS = 15_000;
 export const STALE_MS = 45_000;
 export const TOKEN_KEY = "chromeCtlToken";
+export const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 
 export const Methods = {
   systemReady: "system.ready",
   systemPing: "system.ping",
   sessionStatus: "session.status",
+  windowList: "window.list",
+  windowCreate: "window.create",
+  windowEnsure: "window.ensure",
+  windowUse: "window.use",
+  windowClose: "window.close",
   tabList: "tab.list",
   tabOpen: "tab.open",
   tabSwitch: "tab.switch",
@@ -64,6 +72,9 @@ export function rpcTimeoutMs(method: string): number {
       return 20_000;
     case Methods.pageDescribe:
       return 5_000;
+    case Methods.windowCreate:
+    case Methods.windowEnsure:
+      return 30_000;
     default:
       return DEFAULT_RPC_TIMEOUT_MS;
   }
@@ -122,6 +133,39 @@ export interface TabOpenResult {
 export interface TabSwitchResult {
   success: boolean;
   activeTabId: number;
+}
+
+export interface WindowInfo {
+  windowId: number;
+  focused: boolean;
+  state: string;
+  tabCount: number;
+  automation: boolean;
+}
+
+export interface WindowListResult {
+  windows: WindowInfo[];
+}
+
+export interface WindowResult {
+  windowId: number;
+  activeTabId: number;
+  tabCount: number;
+  focused: boolean;
+  created: boolean;
+}
+
+export interface WindowUseResult {
+  windowId?: number;
+  activeTabId?: number;
+  tabCount?: number;
+  focused?: boolean;
+  cleared?: boolean;
+}
+
+export interface WindowCloseResult {
+  success: boolean;
+  windowId: number;
 }
 
 export interface ViewportInfo {

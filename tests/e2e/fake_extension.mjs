@@ -181,6 +181,62 @@ function fail(code, message, data) {
   return { __rpcError: true, code, message, data };
 }
 
+// Window 10 stands in for the user's own window: focused, already loaded.
+const windows = new Map([[10, { activeTabId: 1, tabIds: [1, 2, 3] }]]);
+let focusedWindowId = 10;
+let nextWindowId = 11;
+let nextTabId = 100;
+let automationWindowId;
+
+function windowInfo(id) {
+  const window = windows.get(id);
+  return {
+    windowId: id,
+    focused: id === focusedWindowId,
+    state: "normal",
+    tabCount: window.tabIds.length,
+    activeTabId: window.activeTabId,
+    automation: id === automationWindowId,
+  };
+}
+
+function createWindow(params) {
+  const focused = params.focused === true;
+  const id = nextWindowId++;
+  const tabId = nextTabId++;
+  windows.set(id, { activeTabId: tabId, tabIds: [tabId] });
+  if (focused) {
+    focusedWindowId = id;
+  }
+  automationWindowId = id;
+  return { windowId: id, activeTabId: tabId, tabCount: 1, focused, created: true };
+}
+
+function windowResult(id, created) {
+  const info = windowInfo(id);
+  return {
+    windowId: id,
+    activeTabId: info.activeTabId,
+    tabCount: info.tabCount,
+    focused: info.focused,
+    created,
+  };
+}
+
+function windowUseResult(id, cleared) {
+  if (id === undefined) {
+    return { windowId: null, activeTabId: 0, tabCount: 0, focused: false, cleared };
+  }
+  const info = windowInfo(id);
+  return {
+    windowId: id,
+    activeTabId: info.activeTabId,
+    tabCount: info.tabCount,
+    focused: info.focused,
+    cleared,
+  };
+}
+
 function handle(method, params) {
   switch (method) {
     case "session.status":
@@ -287,6 +343,54 @@ function handle(method, params) {
         redirectCompleted: true,
         parentTabUrl: "https://example.test/after-sso",
       };
+    }
+    case "window.list":
+      return {
+        windows: [...windows.keys()]
+          .sort((a, b) => a - b)
+          .map((id) => {
+            const info = windowInfo(id);
+            return {
+              windowId: info.windowId,
+              focused: info.focused,
+              state: info.state,
+              tabCount: info.tabCount,
+              automation: info.automation,
+            };
+          }),
+      };
+    case "window.create":
+      return createWindow(params);
+    case "window.ensure":
+      if (automationWindowId !== undefined && windows.has(automationWindowId)) {
+        return windowResult(automationWindowId, false);
+      }
+      return createWindow(params);
+    case "window.use": {
+      if (params.windowId === undefined && params.focused !== true) {
+        automationWindowId = undefined;
+        return windowUseResult(undefined, true);
+      }
+      const target = params.focused === true ? focusedWindowId : Number(params.windowId);
+      if (!windows.has(target)) {
+        return fail(-32001, `window ${target} not found`);
+      }
+      automationWindowId = target;
+      return windowUseResult(target, false);
+    }
+    case "window.close": {
+      const id = Number(params.windowId);
+      if (!windows.has(id)) {
+        return fail(-32001, `window ${id} not found`);
+      }
+      windows.delete(id);
+      if (automationWindowId === id) {
+        automationWindowId = undefined;
+      }
+      if (focusedWindowId === id) {
+        focusedWindowId = Math.min(...windows.keys());
+      }
+      return { success: true, windowId: id };
     }
     default:
       return undefined;

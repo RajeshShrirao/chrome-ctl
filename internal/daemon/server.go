@@ -109,6 +109,7 @@ func (d *daemon) handler() http.Handler {
 	mux.HandleFunc("GET /health", d.requireAuth(d.handleHealth))
 	mux.HandleFunc("POST /rpc", d.requireAuth(d.handleRPC))
 	mux.HandleFunc("GET /ws", d.requireAuth(d.handleWS))
+	mux.HandleFunc("POST /pair", d.handlePair)
 	return mux
 }
 

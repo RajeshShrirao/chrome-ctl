@@ -17,22 +17,34 @@
       <p id="version" class="version" hidden></p>
       <p id="error" class="error" hidden></p>
 
-      <label for="token">Auth token</label>
-      <input
-        id="token"
-        type="password"
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="Paste token"
-      />
+      <p class="pairing-hint">
+        Pairs automatically with the local daemon. Start it with
+        <code>chrome-ctl daemon --start</code>.
+      </p>
 
       <div class="actions">
-        <button id="save" class="primary" type="button">Save</button>
+        <button id="pair" class="primary" type="button">Pair now</button>
         <button id="reconnect" type="button">Reconnect</button>
       </div>
 
       <p id="note" class="note" role="status"></p>
-      <p class="hint">64-character hex token from <code>~/.chrome-ctl/auth_token</code></p>
+
+      <details class="advanced">
+        <summary>Use a manual token</summary>
+        <label for="token">Auth token</label>
+        <input
+          id="token"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Paste token"
+        />
+        <button id="save" type="button">Save token</button>
+        <p class="hint">
+          Run <code>chrome-ctl token</code> or read
+          <code>~/.chrome-ctl/auth_token</code>.
+        </p>
+      </details>
     </main>
     <script type="module" src="popup.js"></script>
   </body>

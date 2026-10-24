@@ -116,9 +116,14 @@ When an agent completes an important, repeatable task (or records one), it can s
 | Category | Command Syntax | Description |
 | --- | --- | --- |
 | **Session & Tab** | `chrome-ctl status` | Check daemon & Chrome extension connection status. |
-|  | `chrome-ctl tabs` | List open tabs with `[TabID] Title - URL`. |
-|  | `chrome-ctl open <url> [--new]` | Navigate current tab or open a new tab. |
+|  | `chrome-ctl tabs [--window <id>]` | List open tabs with `[TabID] Title - URL`. |
+|  | `chrome-ctl open <url> [--new] [--window <id>]` | Navigate current tab or open a new tab. |
 |  | `chrome-ctl switch <tab_id>` | Switch active control to specified tab. |
+| **Background Window** | `chrome-ctl window ensure` | Reuse or create an unfocused automation window; never steals focus. |
+|  | `chrome-ctl window list` | Show every window, which is focused (`*`), which is `(automation)`. |
+|  | `chrome-ctl window new [url] [--foreground]` | Force a fresh automation window. |
+|  | `chrome-ctl window use <id\|focused>` / `clear` | Point automation at another window, or stop targeting one. |
+|  | `chrome-ctl window close <id> [--force]` | Close a window; refuses the focused (user) window without `--force`. |
 | **Observation (Text)** | `chrome-ctl snap [--all] [--forms]` | Output ultra-compact indexed interactive element map. |
 |  | `chrome-ctl read [<id_or_selector>]` | Extract clean markdown text from page or specific container. |
 | **Observation (Visual)** | `chrome-ctl shot [--som] [--gray] [-o path]` | Capture token-optimized WebP screenshot (optional Set-of-Mark IDs). |

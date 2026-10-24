@@ -36,6 +36,37 @@
   { "jsonrpc": "2.0", "result": { "status": "pong", "timestamp": 1729725600 }, "id": null }
   ```
 
+### 1.3 Automatic Pairing
+The extension obtains the token without manual copy/paste.
+
+**Request** — `POST http://127.0.0.1:9229/pair` with:
+```http
+X-Chrome-Ctl-Pair: 1
+Origin: chrome-extension://<extension-id>
+```
+An empty `Origin` (non-browser local client) is also accepted.
+
+**Success** — `200 OK`, `Cache-Control: no-store`:
+```json
+{ "token": "<64_CHAR_HEX_TOKEN>" }
+```
+
+**Rejection** — `403 Forbidden` when any of these fail:
+* `Host` is not a loopback name (`127.0.0.1`, `localhost`, `::1`).
+* The TCP peer address is not loopback.
+* `X-Chrome-Ctl-Pair` is not exactly `1`.
+* `Origin` is present and is not `chrome-extension://…`.
+
+A web page cannot send the custom header cross-origin without a CORS preflight, which the daemon does not answer, so page scripts cannot read the token. `GET /pair` returns `405`.
+
+**Client behavior.**
+* Offscreen document polls `/pair` every 5 seconds while no token is stored, and retries before reconnecting after a failed WebSocket.
+* On success it asks the service worker to persist the token under `chrome.storage.local` key `chromeCtlToken`.
+* `401`/failed WebSocket with a stored token triggers one pairing refresh before the exponential backoff resumes.
+* Manual entry remains available in the popup and via `chrome-ctl token`.
+
+**Rotation.** Delete `~/.chrome-ctl/auth_token` and restart the daemon. The extension detects the rejected socket, re-pairs, and reconnects automatically.
+
 ---
 
 ## 2. Standard Message Framing
@@ -121,7 +152,7 @@ Checks connection health, active Chrome tabs, and debugger attachment status.
   ```
 
 #### `tab.list`
-Returns all open tabs in the current Chrome window.
+Returns the open tabs of one window: `windowId` when given, otherwise the tracked automation window, otherwise the last focused window.
 * **Params:** `{ "windowId"?: number }`
 * **Result:**
   ```json
@@ -139,9 +170,11 @@ Navigates the active tab or opens a new tab.
   ```json
   {
     "url": "https://clutch.co/directory",
-    "newTab": false
+    "newTab": false,
+    "windowId": 12
   }
   ```
+  `windowId` is optional and only consulted with `newTab`; when it is omitted the extension uses the tracked automation window.
 * **Result:**
   ```json
   {
@@ -153,9 +186,49 @@ Navigates the active tab or opens a new tab.
   ```
 
 #### `tab.switch`
-Switches focus and automation control to specified `tabId`.
+Makes `tabId` active inside its own window and moves the automation workspace to that window.
 * **Params:** `{ "tabId": 101 }`
 * **Result:** `{ "success": true, "activeTabId": 101 }`
+  Activating a tab never raises its window, so the user keeps focus.
+
+#### Window management
+The extension stores the automation window id under `chrome.storage.local` (`chromeCtlAutomationWindow`) and validates it with `chrome.windows.get` on every read, so a window the user closed is dropped instead of targeted.
+
+#### `window.list`
+* **Params:** `{}`
+* **Result:**
+  ```json
+  {
+    "windows": [
+      { "windowId": 10, "focused": true, "state": "normal", "tabCount": 3, "automation": false },
+      { "windowId": 12, "focused": false, "state": "normal", "tabCount": 1, "automation": true }
+    ]
+  }
+  ```
+  `state` is Chrome's window state (`normal`, `minimized`, `maximized`, `fullscreen`).
+
+#### `window.create`
+Creates a window and makes it the automation window. Default `focused: false`, so the user's window keeps focus.
+* **Params:** `{ "url"?: "https://example.com", "focused"?: false }`
+* **Result:** `{ "windowId": 12, "activeTabId": 104, "tabCount": 1, "focused": false, "created": true }`
+  With a `url` the call waits for the tab to finish loading before returning (30s budget).
+
+#### `window.ensure`
+Returns the live automation window, or creates one when none is tracked. Same result shape as `window.create`, with `created: false` on reuse.
+* **Params:** `{}`
+
+#### `window.use`
+Re-points automation at an existing window, or clears the tracked id.
+* **Params:** `{ "windowId"?: number, "focused"?: true }` — neither key clears the tracking; `focused` targets the window Chrome reports as last focused; an unknown `windowId` is an error.
+* **Result:** `{ "windowId": 10, "activeTabId": 101, "tabCount": 3, "focused": true, "cleared": false }`, or `{ "cleared": true }` when tracking was removed.
+
+#### `window.close`
+* **Params:** `{ "windowId": 12 }`
+* **Result:** `{ "success": true, "windowId": 12 }`
+  The CLI refuses a focused window unless `--force` is passed, and closing the automation window clears the tracked id.
+
+#### Implicit tab resolution
+Every method that accepts an optional `tabId` resolves it in this order: explicit `tabId`, the active tab of an explicit `windowId`, the active tab of the automation window, then the active tab of the last focused window.
 
 ---
 

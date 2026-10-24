@@ -5,10 +5,12 @@ export type ConnState = "unconfigured" | "connecting" | "connected" | "disconnec
 export type RuntimeMessage =
   | { target: "sw"; type: "ensureOffscreen" }
   | { target: "sw"; type: "getToken" }
+  | { target: "sw"; type: "pairToken"; token: string }
   | { target: "sw"; type: "rpc"; request: RpcRequest }
   | { target: "offscreen"; type: "rpcResult"; response: RpcResponse }
   | { target: "offscreen"; type: "token.updated"; token?: string }
   | { target: "offscreen"; type: "status.get" }
+  | { target: "offscreen"; type: "pair" }
   | { target: "offscreen"; type: "reconnect" };
 
 export interface TokenReply {
@@ -18,6 +20,7 @@ export interface TokenReply {
 export interface WsStatusReply {
   state: ConnState;
   tokenConfigured: boolean;
+  pairing?: boolean;
   daemonVersion?: string;
   lastError?: string;
 }

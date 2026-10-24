@@ -9,21 +9,26 @@ import (
 )
 
 func newTabsCmd() *cobra.Command {
-	return &cobra.Command{
+	var windowID int
+	cmd := &cobra.Command{
 		Use:   "tabs",
 		Short: "List open tabs",
 		Args:  cobra.NoArgs,
-		RunE:  runTabs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var params any
+			if cmd.Flags().Changed("window") {
+				params = protocol.TabListParams{WindowID: &windowID}
+			}
+			var result protocol.TabListResult
+			if err := callRPC(cmd, protocol.MethodTabList, params, &result); err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), formatTabs(result.Tabs))
+			return nil
+		},
 	}
-}
-
-func runTabs(cmd *cobra.Command, _ []string) error {
-	var result protocol.TabListResult
-	if err := callRPC(cmd, protocol.MethodTabList, nil, &result); err != nil {
-		return err
-	}
-	fmt.Fprint(cmd.OutOrStdout(), formatTabs(result.Tabs))
-	return nil
+	cmd.Flags().IntVar(&windowID, "window", 0, "List tabs in a specific window instead of the automation window")
+	return cmd
 }
 
 func formatTabs(tabs []protocol.TabInfo) string {

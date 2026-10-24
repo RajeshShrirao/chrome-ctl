@@ -78,6 +78,12 @@ h1 {
   color: #f0883e;
 }
 
+.pairing-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 label {
   display: block;
   margin: 16px 0 6px;
@@ -146,12 +152,40 @@ button.primary:hover {
   color: var(--ok);
 }
 
+.advanced {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.advanced summary {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.advanced summary:hover {
+  color: var(--text);
+}
+
+.advanced button {
+  width: 100%;
+  margin-top: 8px;
+}
+
 .hint {
   margin: 12px 0 0;
   padding-top: 10px;
   border-top: 1px solid var(--line);
   font-size: 11px;
   color: var(--muted);
+}
+
+.advanced .hint {
+  border-top: 0;
+  padding-top: 8px;
+  margin-top: 8px;
 }
 
 code {

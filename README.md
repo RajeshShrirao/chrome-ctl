@@ -20,6 +20,7 @@ Because it runs inside your normal Chrome profile, every site sees your existing
 - **Small observations.** `snap` returns only interactive elements with stable numeric IDs, typically a few hundred tokens instead of a full DOM dump.
 - **Real sessions.** Google SSO, corporate portals, and social sites work because the browser is already authenticated.
 - **Trusted input.** Clicks, typing, and scrolling use CDP input events (`event.isTrusted === true`) with human-like timing and paths.
+- **Out of your way.** `chrome-ctl window ensure` puts the agent in its own unfocused Chrome window. Nothing steals your focus, your tabs stay where they are, and your video keeps playing.
 - **Visual fallback.** Set-of-Mark WebP screenshots reuse snapshot IDs, so a vision model can act on what it sees.
 - **Repeatable workflows.** Record a successful run once, parameterize it, and replay it locally with no model calls.
 
@@ -47,21 +48,25 @@ make build        # bin/chrome-ctl
 make extension    # extension/dist (load-unpacked target)
 ```
 
-Start the daemon. On first run it creates the auth token and prints it once:
+Start the daemon. On first run it creates the auth token with mode `0600`:
 
 ```bash
 ./bin/chrome-ctl daemon --start
 # Daemon: STARTED (pid 12345, 127.0.0.1:9229)
-# Auth token: <64 hex characters>
 # Token file: ~/.chrome-ctl/auth_token
+# Chrome extension: pairs automatically
 ```
 
-Copy the token, then load the extension:
+Load the extension:
 
 1. Open `chrome://extensions` and enable **Developer mode**.
 2. Choose **Load unpacked** and select the `extension/dist` directory.
-3. Open the **chrome-ctl Bridge** popup, paste the token, and click **Save**.
+3. Open the **chrome-ctl Bridge** popup. It finds the daemon and pairs itself.
 4. The popup should report **Connected**.
+
+No tokens to copy. If the daemon is not running yet, the popup shows **Waiting for daemon** and pairs within a few seconds of it starting.
+
+For a manual fallback, `./bin/chrome-ctl token` prints the token, and the popup's **Advanced → Manual token** section accepts it.
 
 Verify the whole path:
 
@@ -76,6 +81,8 @@ Active Tabs: 3
 ```
 
 `status` exits `1` when the daemon is unreachable, and `0` when the daemon is up even if the extension is disconnected.
+
+Optional but recommended for agents: `./bin/chrome-ctl window ensure` opens a separate, unfocused window so automation never touches the tabs you are using.
 
 ### Install from a release build
 
@@ -104,10 +111,40 @@ Every browser command needs a running daemon and a connected extension.
 | `chrome-ctl daemon --start` | Start the daemon in the background. |
 | `chrome-ctl daemon --stop` | Stop the daemon and remove its PID file. |
 | `chrome-ctl daemon` | Run the daemon in the foreground (logs to stderr). |
+| `chrome-ctl token` | Print the auth token from `~/.chrome-ctl/auth_token` for manual pairing. |
 | `chrome-ctl version` | Print the CLI version. |
 | `chrome-ctl tabs` | List open tabs with their IDs. |
 | `chrome-ctl open <url>` | Navigate the active tab. Add `--new` to open a new tab. |
-| `chrome-ctl switch <tab_id>` | Make a tab active. |
+| `chrome-ctl switch <tab_id>` | Make a tab active; the automation window follows that tab. |
+| `chrome-ctl tabs --window <id>` / `open --window <id>` | Target one window explicitly instead of the automation window. |
+
+### Windows
+
+| Command | Description |
+| :--- | :--- |
+| `chrome-ctl window ensure` | Reuse the background automation window, or create an unfocused one. |
+| `chrome-ctl window list` | Every open window, which is focused, and which is the automation window. |
+| `chrome-ctl window new [url]` | Always create a fresh automation window. `--foreground` focuses it. |
+| `chrome-ctl window use <id\|focused>` | Point automation at an existing window (the user's, by id or `focused`). |
+| `chrome-ctl window clear` | Stop targeting a dedicated window; commands use the focused window again. |
+| `chrome-ctl window close <id>` | Close a window. Refuses a focused one unless `--force`. |
+
+### Background automation window
+
+By default the agent works in a dedicated Chrome window it owns:
+
+```bash
+./bin/chrome-ctl window ensure          # unfocused window, created once and reused
+./bin/chrome-ctl open "https://news.ycombinator.com"   # loads in that window
+./bin/chrome-ctl snap                    # reads that window's active tab
+```
+
+- `window ensure` opens the window without taking focus, and the extension remembers its id in `chrome.storage.local`. Every later command that resolves "the active tab" prefers that window, so your own windows, tabs and video playback are never touched.
+- Focus is only ever changed on request. `switch` activates a tab inside its own window, and screenshots use `captureVisibleTab` on that tab — neither raises the window. `window new --foreground` and `window use focused` are the deliberate exceptions.
+- The yellow "…is debugging this browser" infobar from `chrome.debugger` appears on tabs in the automation window, not on the tabs you are using.
+- The tracked id survives service-worker suspension, extension reload, and browser restart. A stale id (you closed the window) is dropped and the next `window ensure` creates a fresh one.
+- Keep the window un-minimized. Chrome can only capture a visible tab, so a minimized automation window breaks `shot` and `rec`.
+- Driving the user's window is still available and explicit: `window use focused`, then `window clear` when done.
 
 ### Observe
 
@@ -172,6 +209,7 @@ Without `-o`, media is written to `~/.chrome-ctl/media` with mode `0600`.
 A compact read-act-verify cycle:
 
 ```bash
+./bin/chrome-ctl window ensure           # the agent's own unfocused window
 ./bin/chrome-ctl open "https://news.ycombinator.com"
 ./bin/chrome-ctl snap
 # [1] <a> "new" @20,48
@@ -237,7 +275,7 @@ chrome-ctl CLI ─── HTTP POST /rpc (Bearer token) ───▶ daemon (127.
 
 - The **CLI** is stateless. It reads the token from disk and sends JSON-RPC 2.0 requests to the daemon.
 - The **daemon** authenticates requests, keeps media and macro state, and forwards browser work.
-- The **extension** keeps the WebSocket alive in an offscreen document, so Manifest V3 service-worker suspension does not drop the bridge.
+- The **extension** keeps the WebSocket alive in an offscreen document, so Manifest V3 service-worker suspension does not drop the bridge. It also owns the automation-window id in `chrome.storage.local`, which is why the CLI stays stateless and the window survives a restart.
 - **Content scripts** build snapshots, read Markdown, and describe elements across open shadow roots and same-origin iframes.
 
 The wire protocol is specified in [docs/PROTOCOL.md](docs/PROTOCOL.md). Architecture and lifecycle details are in [docs/TECH_SPEC.md](docs/TECH_SPEC.md) and [docs/MV3_LIFECYCLE_SPEC.md](docs/MV3_LIFECYCLE_SPEC.md).
@@ -248,13 +286,14 @@ The wire protocol is specified in [docs/PROTOCOL.md](docs/PROTOCOL.md). Architec
 
 - The daemon binds only to `127.0.0.1`.
 - Every HTTP and WebSocket request requires a comparison against a 64-character token stored at `~/.chrome-ctl/auth_token` (mode `0600`, directory `0700`).
+- `POST /pair` is the only unauthenticated route. It requires a loopback peer **and** loopback `Host`, the custom `X-Chrome-Ctl-Pair: 1` header, and an `Origin` that is empty or `chrome-extension://…`. A web page cannot satisfy the header check cross-origin, so it cannot read the token.
 - Tokens and request URLs are never written to daemon logs.
-- The extension sends the token only to the loopback daemon.
+- The extension sends the token only to the loopback daemon and stores it in `chrome.storage.local`.
 - SSO automation is click-only and aborts at password prompts; credentials and CAPTCHAs are left to you.
 - Screenshots, recordings, and macros stay under `~/.chrome-ctl`.
 - `chrome.debugger` grants broad control over the attached tab. Attach deliberately and stop the daemon when you are done.
 
-Do not commit the token, paste it into a website, or share logs that contain it. To rotate it, stop the daemon, delete `~/.chrome-ctl/auth_token`, start the daemon again, and paste the new token into the extension popup.
+Do not commit the token, paste it into a website, or share logs that contain it. To rotate it, stop the daemon, delete `~/.chrome-ctl/auth_token`, and start the daemon again; the extension re-pairs automatically. Any local process running as you can already read the `0600` token file, so pairing does not widen the trust boundary.
 
 ## Configuration
 
@@ -341,9 +380,13 @@ After rebuilding the extension, click **Reload** on `chrome://extensions`. Conte
 | Symptom | Likely cause and fix |
 | :--- | :--- |
 | `Daemon: STOPPED` | Run `chrome-ctl daemon --start`; inspect `~/.chrome-ctl/daemon.log`. |
-| `Chrome Extension: DISCONNECTED` | Reload the extension, reopen the popup, and re-save the token. |
-| Popup shows `Unconfigured` | No token in extension storage. Paste the token from `~/.chrome-ctl/auth_token`. |
+| `Chrome Extension: DISCONNECTED` | Reload the extension; it re-pairs on reconnect. Click **Reconnect** in the popup to retry immediately. |
+| Popup shows `Waiting for daemon` | Start the daemon; the popup pairs automatically within a few seconds. |
+| Pairing keeps failing | Confirm the daemon is on `127.0.0.1:9229`, then use **Advanced → Manual token** with the output of `chrome-ctl token`. |
 | Commands fail with `element not found` | Take a fresh `snap`; the page changed or the element is off-screen (`snap --all`). |
+| Commands act on the wrong window | `chrome-ctl window list` shows which window is flagged `(automation)`; use `window use <id>` or `window clear`. |
+| `shot`/`rec` fail on the automation window | The window is minimized. Chrome can only capture a visible tab; restore the window or run `window ensure` for a fresh one. |
+| `window close` refuses | The target has focus, so it is the window you are using. Pass `--force` only if you meant it. |
 | Debugger attach fails | Close DevTools on that tab, or stop another tool using `chrome.debugger`. |
 | Screenshot fails with a WebP error | Rebuild with `make build` (missing `-tags nodynamic`). |
 | WebM export fails | Install `ffmpeg`, set `CHROME_CTL_FFMPEG`, or use `rec stop --grid`. |
@@ -355,7 +398,7 @@ Status semantics: `status` exits `1` only when the daemon cannot be reached. A r
 ## Limitations
 
 - macOS and Linux only; no Windows build target.
-- The extension drives the active tab; screenshots and recordings capture the visible tab, not background tabs.
+- The extension drives the active tab; screenshots and recordings capture the visible tab of a window, not background tabs. A minimized window cannot be captured.
 - Sites that block automation, require interactive CAPTCHAs, or prohibit scripted access remain your responsibility.
 - WebM export depends on an external `ffmpeg`; WebP artifacts do not.
 - The debugger attachment is visible to Chrome and can conflict with DevTools or other debugging extensions.

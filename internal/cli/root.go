@@ -34,7 +34,9 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(
 		newVersionCmd(),
 		newStatusCmd(),
+		newTokenCmd(),
 		newDaemonCmd(),
+		newWindowCmd(),
 		newTabsCmd(),
 		newOpenCmd(),
 		newSwitchCmd(),

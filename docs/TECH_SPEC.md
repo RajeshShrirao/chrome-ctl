@@ -24,6 +24,7 @@ To fulfill the requirements in [PRD.md](file:///Users/rajeshshrirao/Desktop/Chro
 * **Security Model:**
   * To prevent malicious web pages on the user's browser or local processes from connecting, the daemon generates a 64-character cryptographically secure token stored in `~/.chrome-ctl/auth_token` (`chmod 0600`).
   * The WebSocket handshake requires `Authorization: Bearer <TOKEN>` or `?token=<TOKEN>`. Unauthenticated connections are dropped instantly.
+  * The extension obtains the token through `POST /pair`, restricted to loopback peers/hosts, the `X-Chrome-Ctl-Pair: 1` header, and a `chrome-extension://` (or absent) `Origin`. This keeps the zero-config install without exposing the token to web pages.
 
 ### 1.3 Chrome Extension: Manifest V3 (Vanilla TypeScript + Vite/esbuild)
 * **Offscreen Document for Persistent Connection:** Manifest V3 background service workers terminate after 30 seconds of inactivity. We employ a dedicated, hidden `offscreen.html` document with `chrome.offscreen` API. Offscreen documents are **not** subject to the 30-second service worker suspension, providing an unbroken, persistent WebSocket connection.
@@ -105,7 +106,7 @@ To fulfill the requirements in [PRD.md](file:///Users/rajeshshrirao/Desktop/Chro
 │   └── chrome-ctl/
 │       └── main.go              # CLI entry point (Cobra commands)
 ├── internal/
-│   ├── cli/                     # CLI subcommand handlers (snap, shot, click, etc.)
+│   ├── cli/                     # CLI subcommand handlers (snap, shot, click, window, etc.)
 │   ├── daemon/                  # Background WebSocket server & connection manager
 │   ├── protocol/                # Shared message types & serialization
 │   ├── media/                   # WebP compression, SoM badge drawing, WebM grid

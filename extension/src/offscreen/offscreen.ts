@@ -1,8 +1,11 @@
 import {
+  DAEMON_PAIR_URL,
   DAEMON_WS_URL,
   HEARTBEAT_MS,
   Methods,
+  PAIR_HEADER,
   STALE_MS,
+  TOKEN_PATTERN,
   rpcTimeoutMs,
 } from "../shared/protocol.js";
 import type { RpcRequest, RpcResponse } from "../shared/protocol.js";
@@ -17,6 +20,8 @@ const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 10_000;
 const BACKOFF_FACTOR = 1.5;
 const JITTER_RATIO = 0.2;
+const PAIR_POLL_MS = 5_000;
+const PAIR_TIMEOUT_MS = 3_000;
 
 interface PendingCall {
   ws: WebSocket;
@@ -31,9 +36,11 @@ let lastError: string | undefined;
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let pairTimer: ReturnType<typeof setTimeout> | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
+let pairingPromise: Promise<boolean> | null = null;
 
 const pending = new Map<string, PendingCall>();
 
@@ -48,6 +55,7 @@ function requestToken(): Promise<void> {
           token = undefined;
           tokenConfigured = false;
           lastError = "could not reach service worker";
+          schedulePairing(0);
           resolve();
           return;
         }
@@ -60,25 +68,129 @@ function requestToken(): Promise<void> {
       token = undefined;
       tokenConfigured = false;
       lastError = "could not reach service worker";
+      schedulePairing(0);
       resolve();
     }
   });
 }
 
 function applyToken(next: string | undefined): void {
+  if (next === token) {
+    if (next === undefined) {
+      state = "unconfigured";
+      schedulePairing(0);
+      return;
+    }
+    if (state === "connected" || state === "connecting") {
+      return;
+    }
+  }
+
   token = next;
   tokenConfigured = next !== undefined;
   daemonVersion = undefined;
 
   if (next === undefined) {
     clearReconnectTimer();
+    clearPairTimer();
     closeSocket();
     state = "unconfigured";
     lastError = undefined;
+    schedulePairing(0);
     return;
   }
 
+  clearPairTimer();
   connect();
+}
+
+function clearPairTimer(): void {
+  if (pairTimer !== null) {
+    clearTimeout(pairTimer);
+    pairTimer = null;
+  }
+}
+
+function schedulePairing(delayMs = PAIR_POLL_MS): void {
+  if (pairTimer !== null || token !== undefined) {
+    return;
+  }
+  pairTimer = setTimeout(() => {
+    pairTimer = null;
+    void pairWithDaemon().then((paired) => {
+      if (!paired && token === undefined) {
+        schedulePairing();
+      }
+    });
+  }, delayMs);
+}
+
+function storePairedToken(value: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const message: RuntimeMessage = { target: "sw", type: "pairToken", token: value };
+    try {
+      chrome.runtime.sendMessage(message, (reply: { ok?: boolean } | undefined) => {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
+        resolve(reply?.ok === true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function fetchPairToken(): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAIR_TIMEOUT_MS);
+  try {
+    const response = await fetch(DAEMON_PAIR_URL, {
+      method: "POST",
+      headers: { [PAIR_HEADER]: "1" },
+      cache: "no-store",
+      credentials: "omit",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as { token?: unknown };
+    return typeof body.token === "string" && TOKEN_PATTERN.test(body.token) ? body.token : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function doPair(): Promise<boolean> {
+  const paired = await fetchPairToken();
+  if (paired === null) {
+    return false;
+  }
+  clearPairTimer();
+  lastError = undefined;
+  if (paired === token) {
+    if (state !== "connected" && state !== "connecting") {
+      connect();
+    }
+    return true;
+  }
+  await storePairedToken(paired);
+  applyToken(paired);
+  return true;
+}
+
+function pairWithDaemon(): Promise<boolean> {
+  if (pairingPromise !== null) {
+    return pairingPromise;
+  }
+  pairingPromise = doPair().finally(() => {
+    pairingPromise = null;
+  });
+  return pairingPromise;
 }
 
 function sendJson(ws: WebSocket, payload: unknown): void {
@@ -176,6 +288,7 @@ function closeSocket(): void {
 function scheduleReconnect(): void {
   if (token === undefined) {
     state = "unconfigured";
+    schedulePairing(0);
     return;
   }
   clearReconnectTimer();
@@ -185,8 +298,19 @@ function scheduleReconnect(): void {
   reconnectAttempt += 1;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
+    void reconnectAfterFailure();
   }, delay);
+}
+
+async function reconnectAfterFailure(): Promise<void> {
+  if (token === undefined) {
+    schedulePairing(0);
+    return;
+  }
+  if (await pairWithDaemon()) {
+    return;
+  }
+  connect();
 }
 
 function handleOpen(ws: WebSocket): void {
@@ -212,6 +336,7 @@ function handleClose(ws: WebSocket): void {
 
   if (token === undefined) {
     state = "unconfigured";
+    schedulePairing(0);
     return;
   }
   state = "disconnected";
@@ -362,6 +487,9 @@ function connect(): void {
 }
 
 async function reloadTokenAndConnect(): Promise<void> {
+  if (await pairWithDaemon()) {
+    return;
+  }
   await requestToken();
 }
 
@@ -380,6 +508,9 @@ function statusReply(): WsStatusReply {
     state: currentState(),
     tokenConfigured,
   };
+  if (pairingPromise !== null) {
+    reply.pairing = true;
+  }
   if (daemonVersion !== undefined) {
     reply.daemonVersion = daemonVersion;
   }
@@ -419,6 +550,17 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       );
       sendResponse({ ok: true });
       return false;
+    case "pair":
+      void pairWithDaemon().then((ok) => {
+        if (!ok) {
+          lastError = "Could not reach the daemon";
+          if (token === undefined) {
+            schedulePairing();
+          }
+        }
+        sendResponse({ ok });
+      });
+      return true;
     case "reconnect":
       void reloadTokenAndConnect().catch(() => {});
       sendResponse({ ok: true });

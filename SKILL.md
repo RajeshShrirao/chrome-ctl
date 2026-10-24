@@ -1,6 +1,6 @@
 ---
 name: chrome-ctl
-description: Control the user's authenticated Chrome browser with low token overhead, human-like actions, Google SSO handling, optimized screenshots/recordings, and reusable local macros.
+description: Control the user's authenticated Chrome browser with low token overhead, human-like actions, Google SSO handling, optimized screenshots/recordings, and reusable local macros, from a dedicated background window that never steals focus.
 ---
 
 # Chrome Control (`chrome-ctl`)
@@ -11,16 +11,35 @@ Use the installed `chrome-ctl` binary (or `./bin/chrome-ctl` from a source check
 
 ## Core principles
 
-1. Never ask for or scrape raw HTML. Use `chrome-ctl snap` to get a compact map of interactive elements with numeric IDs (`[1]`, `[2]`, ...).
-2. Use `chrome-ctl snap --forms` when filling registrations: it limits output to inputs, selects, textareas, and submit controls.
-3. Chain `--snap` after UI-changing actions (`click`, `type`) to get the next element map in one turn instead of issuing a separate snapshot.
-4. Prefer text snapshots. Reach for `chrome-ctl shot --som` only when icons, canvas UI, or visual layout make text ambiguous, or when you need visual proof. Set-of-Mark badges reuse the same IDs as `snap`.
-5. Run `chrome-ctl macro list` before a multi-step or repeatable task. Reusing a saved macro consumes no model tokens.
+1. Work in your own window. Run `chrome-ctl window ensure` before the first browser command: it reuses or creates an unfocused Chrome window, and every later command targets it automatically. The user's windows, tabs, video playback, and keyboard focus stay untouched.
+2. Never ask for or scrape raw HTML. Use `chrome-ctl snap` to get a compact map of interactive elements with numeric IDs (`[1]`, `[2]`, ...).
+3. Use `chrome-ctl snap --forms` when filling registrations: it limits output to inputs, selects, textareas, and submit controls.
+4. Chain `--snap` after UI-changing actions (`click`, `type`) to get the next element map in one turn instead of issuing a separate snapshot.
+5. Prefer text snapshots. Reach for `chrome-ctl shot --som` only when icons, canvas UI, or visual layout make text ambiguous, or when you need visual proof. Set-of-Mark badges reuse the same IDs as `snap`.
+6. Run `chrome-ctl macro list` before a multi-step or repeatable task. Reusing a saved macro consumes no model tokens.
+
+## Staying out of the user's way
+
+```bash
+chrome-ctl window ensure                    # reuse or create the unfocused automation window
+chrome-ctl window list                      # * marks the focused window, (automation) marks yours
+chrome-ctl window new "https://example.com" # always a fresh window
+chrome-ctl window close 12                  # tidy up when finished
+chrome-ctl window clear                     # stop targeting a dedicated window
+```
+
+- Run `window ensure` once per session. It is idempotent and never takes focus, so it is safe to run even when the user is mid-video.
+- After that, `open`, `tabs`, `snap`, `read`, `click`, `type`, `shot`, `rec`, and `sso` all resolve to the active tab of the automation window. Do not navigate, switch, or close tabs or windows the user owns.
+- Focus changes only happen on request. Never use `window new --foreground`, `window use focused`, or `window close --force` unless the user explicitly asked you to work in their window — then say which window you took over, and `window clear` when done.
+- `window use <id>` points the whole workspace at another window. `switch <tab_id>` also moves the workspace to that tab's window, so subsequent implicit commands follow it.
+- Keep the automation window visible, not minimized: Chrome can only capture a visible tab, so `shot` and `rec` fail against a minimized window. `window list` reports `(minimized)`; ask the user to restore it or `window ensure`/`window new` for a fresh one.
+- `window close` refuses a focused window because that is the one the user is looking at. Close only windows you created, and never with `--force` unless the user asked.
 
 ## Standard loop
 
 ```bash
 chrome-ctl status                       # daemon + extension health
+chrome-ctl window ensure                # your own unfocused window
 chrome-ctl tabs                         # list open tabs
 chrome-ctl open "https://example.com"   # navigate the active tab
 chrome-ctl open "https://example.com" --new
@@ -118,7 +137,9 @@ chrome-ctl snap                # re-observe after any failed action
 ```
 
 - If the daemon is stopped, run `chrome-ctl daemon --start` and check `status` again.
-- If the extension is disconnected, ask the user to load/reload `extension/dist` from `chrome://extensions` and confirm the token in the popup.
+- If the extension is disconnected, ask the user to load/reload `extension/dist` from `chrome://extensions`; it pairs with the daemon automatically. `chrome-ctl status` should then report `CONNECTED`.
 - On `element not found` or a stale ID, `snap` (or `snap --all`) and retry with the current ID rather than guessing.
+- If a command reads the wrong page, `chrome-ctl window list` shows which window is `(automation)`; point at the right one with `window use <id>` or `tabs --window <id>` instead of touching the user's window.
+- If `shot` or `rec stop` fails on a background window, check `window list` for `(minimized)` and use a visible window.
 - If `sso` times out, `snap` to see whether the popup closed, a consent screen appeared, or manual action is needed.
 - On `MACRO STEP FAILED`, follow the macro repair flow above; do not rerun the same macro unchanged.
