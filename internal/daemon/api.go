@@ -15,6 +15,9 @@ type Config struct {
 	Log            *log.Logger
 	ReadTimeout    time.Duration
 	ForwardTimeout time.Duration
+	// DisableEval rejects page.eval so untrusted automation cannot execute
+	// arbitrary script in the user's authenticated browser.
+	DisableEval bool
 }
 
 func Run(ctx context.Context, cfg Config) error {

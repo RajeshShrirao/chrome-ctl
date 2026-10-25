@@ -67,7 +67,7 @@ func TestMacroRecordSaveAndList(t *testing.T) {
 			return protocol.ActionClickResult{
 				Success: true,
 				Action:  "click",
-				Target:  protocol.ActionTarget{ID: 7, Tag: "button", Label: "Submit"},
+				Target:  &protocol.ActionTarget{ID: 7, Tag: "button", Label: "Submit"},
 			}, nil
 		case protocol.MethodActionType:
 			return protocol.ActionTypeResult{Success: true, CharsTyped: 5}, nil

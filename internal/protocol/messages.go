@@ -19,6 +19,9 @@ const (
 	MethodPageSnap      = "page.snap"
 	MethodPageRead      = "page.read"
 	MethodPageWait      = "page.wait"
+	MethodPageEval      = "page.eval"
+	MethodPageAttr      = "page.attr"
+	MethodPageNet       = "page.net"
 	MethodActionClick   = "action.click"
 	MethodActionType    = "action.type"
 	MethodActionPress   = "action.press"
@@ -47,6 +50,9 @@ const (
 	ErrUnauthorized           = -32006
 	ErrNavigationFailed       = -32007
 	ErrMacroStepFailed        = -32008
+	ErrDispatchedUnconfirmed  = -32009
+	ErrSnapshotStale          = -32010
+	ErrFeatureDisabled        = -32011
 	ErrMethodNotFound         = -32601
 	ErrInvalidRequest         = -32600
 	ErrInternal               = -32603
@@ -198,9 +204,11 @@ type TabSwitchResult struct {
 }
 
 type PageSnapParams struct {
-	TabID     *int `json:"tabId,omitempty"`
-	All       bool `json:"all,omitempty"`
-	FormsOnly bool `json:"formsOnly,omitempty"`
+	TabID       *int `json:"tabId,omitempty"`
+	All         bool `json:"all,omitempty"`
+	FormsOnly   bool `json:"formsOnly,omitempty"`
+	Deep        bool `json:"deep,omitempty"`
+	MaxElements int  `json:"maxElements,omitempty"`
 }
 
 type ViewportInfo struct {
@@ -227,26 +235,50 @@ type SnapResult struct {
 	TabID         int           `json:"tabId"`
 	Title         string        `json:"title"`
 	URL           string        `json:"url"`
+	DocID         string        `json:"docId"`
+	SnapshotID    int           `json:"snapshotId"`
 	Viewport      ViewportInfo  `json:"viewport"`
 	Elements      []SnapElement `json:"elements"`
 	FormattedText string        `json:"formattedText"`
+	Omitted       int           `json:"omitted,omitempty"`
 }
 
 type PageReadParams struct {
-	TabID    *int   `json:"tabId,omitempty"`
-	ID       *int   `json:"id,omitempty"`
-	Selector string `json:"selector,omitempty"`
+	TabID     *int   `json:"tabId,omitempty"`
+	ID        *int   `json:"id,omitempty"`
+	Selector  string `json:"selector,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	MaxTables int    `json:"maxTables,omitempty"`
+	MaxLinks  int    `json:"maxLinks,omitempty"`
+}
+
+// ReadTable is one table extracted in tables mode. Rows never include the
+// header row; Headers is promoted from thead/th or from the first row.
+type ReadTable struct {
+	Index   int        `json:"index"`
+	Caption string     `json:"caption,omitempty"`
+	Headers []string   `json:"headers"`
+	Rows    [][]string `json:"rows"`
+}
+
+type ReadLink struct {
+	Text string `json:"text"`
+	Href string `json:"href"`
 }
 
 type PageReadResult struct {
-	Markdown string `json:"markdown"`
+	Markdown  string      `json:"markdown,omitempty"`
+	Tables    []ReadTable `json:"tables,omitempty"`
+	Links     []ReadLink  `json:"links,omitempty"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 type ActionClickParams struct {
-	TabID       *int `json:"tabId,omitempty"`
-	ID          int  `json:"id"`
-	DoubleClick bool `json:"doubleClick,omitempty"`
-	Snap        bool `json:"snap,omitempty"`
+	TabID       *int               `json:"tabId,omitempty"`
+	ID          int                `json:"id,omitempty"`
+	At          *ActionCoordinates `json:"at,omitempty"`
+	DoubleClick bool               `json:"doubleClick,omitempty"`
+	Snap        bool               `json:"snap,omitempty"`
 }
 
 type ActionTarget struct {
@@ -261,12 +293,14 @@ type ActionCoordinates struct {
 }
 
 type ActionClickResult struct {
-	Success     bool              `json:"success"`
-	Action      string            `json:"action"`
-	Target      ActionTarget      `json:"target"`
-	Coordinates ActionCoordinates `json:"coordinates"`
-	DurationMs  int               `json:"durationMs"`
-	Snapshot    *SnapResult       `json:"snapshot,omitempty"`
+	Success     bool               `json:"success"`
+	Action      string             `json:"action"`
+	Target      *ActionTarget      `json:"target,omitempty"`
+	Coordinates *ActionCoordinates `json:"coordinates,omitempty"`
+	LandedOn    string             `json:"landedOn,omitempty"`
+	URLChanged  bool               `json:"urlChanged,omitempty"`
+	DurationMs  int                `json:"durationMs"`
+	Snapshot    *SnapResult        `json:"snapshot,omitempty"`
 }
 
 type ActionTypeParams struct {
@@ -284,6 +318,9 @@ type ActionTypeResult struct {
 	DurationMs    int         `json:"durationMs"`
 	TyposInjected int         `json:"typosInjected"`
 	StateDelta    string      `json:"stateDelta,omitempty"`
+	Verified      bool        `json:"verified"`
+	Verification  string      `json:"verification,omitempty"`
+	ReadBack      string      `json:"readBack,omitempty"`
 	Snapshot      *SnapResult `json:"snapshot,omitempty"`
 }
 
@@ -323,15 +360,22 @@ type ActionUploadResult struct {
 }
 
 type PageWaitParams struct {
-	TabID     *int   `json:"tabId,omitempty"`
-	Selector  string `json:"selector,omitempty"`
-	Idle      bool   `json:"idle,omitempty"`
-	TimeoutMs int    `json:"timeoutMs,omitempty"`
+	TabID      *int   `json:"tabId,omitempty"`
+	Selector   string `json:"selector,omitempty"`
+	Idle       bool   `json:"idle,omitempty"`
+	Text       string `json:"text,omitempty"`
+	IgnoreCase *bool  `json:"ignoreCase,omitempty"`
+	Network    bool   `json:"network,omitempty"`
+	QuietMs    int    `json:"quietMs,omitempty"`
+	TimeoutMs  int    `json:"timeoutMs,omitempty"`
 }
 
 type PageWaitResult struct {
-	WaitedMs int  `json:"waitedMs"`
-	Matched  bool `json:"matched"`
+	WaitedMs int    `json:"waitedMs"`
+	Matched  bool   `json:"matched"`
+	Reason   string `json:"reason,omitempty"`
+	Inflight int    `json:"inflight,omitempty"`
+	Requests int    `json:"requests,omitempty"`
 }
 
 type MediaShotParams struct {
@@ -349,6 +393,7 @@ type MediaShotResult struct {
 	Height        int    `json:"height"`
 	SomBadgeCount int    `json:"somBadgeCount"`
 	Gray          bool   `json:"gray"`
+	CapturePath   string `json:"capturePath,omitempty"`
 }
 
 type MediaRecStartParams struct {
@@ -390,7 +435,80 @@ type MediaCaptureResult struct {
 	ViewportWidth    int           `json:"viewportWidth"`
 	ViewportHeight   int           `json:"viewportHeight"`
 	DevicePixelRatio float64       `json:"devicePixelRatio,omitempty"`
+	CapturePath      string        `json:"capturePath,omitempty"`
 	Elements         []SnapElement `json:"elements,omitempty"`
+}
+
+// EvalParams runs an expression in the page's main world through CDP.
+type EvalParams struct {
+	TabID        *int   `json:"tabId,omitempty"`
+	Expression   string `json:"expression"`
+	AwaitPromise bool   `json:"awaitPromise,omitempty"`
+	TimeoutMs    int    `json:"timeoutMs,omitempty"`
+}
+
+type EvalResult struct {
+	JSON      string `json:"json"`
+	Type      string `json:"type,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// PageAttrParams resolves one element and returns its attributes. Exactly one
+// of ID or Selector is expected; Selector accepts a bare CSS selector.
+type PageAttrParams struct {
+	TabID    *int   `json:"tabId,omitempty"`
+	ID       *int   `json:"id,omitempty"`
+	Selector string `json:"selector,omitempty"`
+}
+
+type ElementRect struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+type PageAttrResult struct {
+	DocID      string            `json:"docId"`
+	SnapshotID int               `json:"snapshotId"`
+	Tag        string            `json:"tag"`
+	Role       string            `json:"role,omitempty"`
+	Type       string            `json:"type,omitempty"`
+	Label      string            `json:"label,omitempty"`
+	Value      string            `json:"value,omitempty"`
+	State      string            `json:"state,omitempty"`
+	Href       string            `json:"href,omitempty"`
+	Src        string            `json:"src,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	ElementID  string            `json:"elementId,omitempty"`
+	Rect       ElementRect       `json:"rect"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Matches    int               `json:"matches"`
+}
+
+// NetEntry is one request observed through the CDP Network domain.
+type NetEntry struct {
+	RequestID  string `json:"requestId,omitempty"`
+	URL        string `json:"url"`
+	Method     string `json:"method,omitempty"`
+	Type       string `json:"type,omitempty"`
+	Status     int    `json:"status,omitempty"`
+	Error      string `json:"error,omitempty"`
+	StartedAt  int64  `json:"startedAt,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+}
+
+type PageNetParams struct {
+	TabID      *int  `json:"tabId,omitempty"`
+	ErrorsOnly bool  `json:"errorsOnly,omitempty"`
+	Limit      int   `json:"limit,omitempty"`
+	SinceMs    int64 `json:"sinceMs,omitempty"`
+}
+
+type PageNetResult struct {
+	Entries   []NetEntry `json:"entries"`
+	EnabledAt int64      `json:"enabledAt,omitempty"`
+	Note      string     `json:"note,omitempty"`
 }
 
 // MacroTarget is the multi-tier resilient selector captured for an element.

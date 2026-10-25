@@ -58,11 +58,22 @@ func mapRPCError(rpcErr *protocol.RPCError) error {
 	switch rpcErr.Code {
 	case protocol.ErrConnection:
 		return fmt.Errorf("Chrome extension not connected (daemon reported: %s)", rpcErr.Message)
+	case protocol.ErrDispatchedUnconfirmed:
+		return fmt.Errorf("DISPATCHED, %s. State unknown — run `chrome-ctl snap` before retrying; do not repeat the action blindly", rpcErr.Message)
+	case protocol.ErrSnapshotStale, protocol.ErrFeatureDisabled:
+		return errors.New(rpcErr.Message)
 	case protocol.ErrElementNotFound, protocol.ErrElementNotInteractable, protocol.ErrTabNotFound,
 		protocol.ErrDebuggerDetached, protocol.ErrNavigationFailed,
 		protocol.ErrSSOTimeout:
 		// These carry actionable messages from the extension; show them verbatim.
 		return errors.New(rpcErr.Message)
+	case protocol.ErrInternal:
+		// The offscreen relay reports its own deadline this way. The request
+		// was already dispatched, so the side effect may have occurred.
+		if rpcErr.Message == "extension timed out" {
+			return errors.New("DISPATCHED, the extension stopped waiting for an ack. State unknown — run `chrome-ctl snap` before retrying; do not repeat the action blindly")
+		}
+		return fmt.Errorf("%s (code %d)", rpcErr.Message, rpcErr.Code)
 	default:
 		return fmt.Errorf("%s (code %d)", rpcErr.Message, rpcErr.Code)
 	}

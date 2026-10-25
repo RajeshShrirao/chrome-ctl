@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>chrome-ctl SPA fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; line-height: 1.5; }
+    .row { margin: 18px 0; }
+    .combo { border: 1px solid #999; border-radius: 6px; padding: 8px 12px; width: 320px; cursor: pointer; }
+    .listbox { border: 1px solid #999; border-radius: 6px; margin: 4px 0 0; padding: 4px 0; width: 320px; list-style: none; }
+    .listbox[hidden] { display: none; }
+    .option { padding: 6px 12px; cursor: pointer; }
+    .option:hover { background: #eef; }
+    .picked { color: #070; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+    th { background: #f4f4f4; }
+    .pointer-only { background: #e8f0ff; border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+    .heavy { max-height: 120px; overflow: auto; border: 1px dashed #ccc; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h1>SPA fixture</h1>
+
+  <div class="row">
+    <button id="consent">Accept cookies</button>
+    <span id="consent-state">consent pending</span>
+  </div>
+
+  <div class="row">
+    <label for="name">Display name</label><br>
+    <input id="name" type="text" placeholder="Type a name">
+  </div>
+
+  <div class="row">
+    <label for="revert">Controlled input (reverts)</label><br>
+    <input id="revert" type="text" placeholder="This field rejects input">
+  </div>
+
+  <div class="row">
+    <div id="combo" class="combo" role="combobox" aria-expanded="false" aria-controls="options" tabindex="0">
+      Choose a topic
+    </div>
+    <ul id="options" class="listbox" role="listbox" hidden>
+      <li class="option" role="option" tabindex="-1">Browser automation</li>
+      <li class="option" role="option" tabindex="-1">Token budgets</li>
+      <li class="option" role="option" tabindex="-1">Network idle</li>
+    </ul>
+    <div id="picked" class="picked"></div>
+  </div>
+
+  <div class="row">
+    <span id="pointer" class="pointer-only">Pointer-only control (no role)</span>
+  </div>
+
+  <div class="row">
+    <button id="snapshot-btn">Take page snapshot</button>
+    <span id="snapshot-state">not taken</span>
+  </div>
+
+  <div class="row">
+    <label for="file">Attach a file</label><br>
+    <input id="file" type="file" style="display: none">
+    <span id="file-state">no file</span>
+  </div>
+
+  <div class="row">
+    <h2>Panel</h2>
+    <div id="panel">loading…</div>
+  </div>
+
+  <div class="row">
+    <h2>Results</h2>
+    <table id="results">
+      <caption>Quarterly totals</caption>
+      <thead>
+        <tr><th>Region</th><th>Q1</th><th>Q2</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>North</td><td>120</td><td>140</td></tr>
+        <tr><td>South</td><td>98</td><td>131</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="row">
+    <h2>Links</h2>
+    <ul>
+      <li><a id="rel-link" href="other.html">Relative link</a></li>
+      <li><a id="dup-link" href="other.html">Duplicate target</a></li>
+      <li><a id="abs-link" href="https://example.com/report">Absolute link</a></li>
+      <li><a id="download-link" href="sample.csv" download>Download CSV</a></li>
+    </ul>
+  </div>
+
+  <div class="row">
+    <h2>Deep snapshot stress</h2>
+    <div id="heavy" class="heavy"></div>
+  </div>
+
+  <script>
+    // Consent banner simulation: the button hides itself once accepted.
+    document.getElementById('consent').addEventListener('click', (event) => {
+      event.currentTarget.hidden = true;
+      document.getElementById('consent-state').textContent = 'consent accepted';
+    });
+
+    // Non-semantic combobox: only a div with a role, no native select.
+    const combo = document.getElementById('combo');
+    const options = document.getElementById('options');
+    combo.addEventListener('click', () => {
+      const open = combo.getAttribute('aria-expanded') === 'true';
+      combo.setAttribute('aria-expanded', String(!open));
+      options.hidden = open;
+    });
+    for (const option of options.querySelectorAll('[role=option]')) {
+      option.addEventListener('click', () => {
+        combo.textContent = option.textContent;
+        combo.setAttribute('aria-expanded', 'false');
+        options.hidden = true;
+        document.getElementById('picked').textContent = 'picked: ' + option.textContent;
+      });
+    }
+
+    // Pointer-only control: clickable via clickat / --deep, invisible to the base selector.
+    document.getElementById('pointer').addEventListener('click', () => {
+      document.getElementById('pointer').textContent = 'pointer control clicked';
+    });
+
+    // A controlled-style input that always reverts what was typed.
+    const revert = document.getElementById('revert');
+    revert.addEventListener('input', () => {
+      setTimeout(() => { revert.value = ''; }, 0);
+    });
+
+    document.getElementById('snapshot-btn').addEventListener('click', () => {
+      document.getElementById('snapshot-state').textContent = 'snapshot taken';
+    });
+
+    document.getElementById('file').addEventListener('change', (event) => {
+      const file = event.target.files && event.target.files[0];
+      document.getElementById('file-state').textContent = file ? 'file: ' + file.name : 'no file';
+    });
+
+    // 3 seconds of background polling, then the panel renders. This keeps the
+    // network busy longer than DOM idle would, which is the point of the test.
+    let ticks = 0;
+    const poll = setInterval(() => {
+      ticks += 1;
+      fetch('data.json?tick=' + ticks, { cache: 'no-store' }).catch(() => {});
+      if (ticks >= 15) {
+        clearInterval(poll);
+        document.getElementById('panel').textContent = 'Panel ready';
+      }
+    }, 200);
+
+    // Many cursor:pointer divs to exercise --deep culling and omission counts.
+    const heavy = document.getElementById('heavy');
+    for (let i = 0; i < 120; i += 1) {
+      const div = document.createElement('div');
+      div.className = 'pointer-only';
+      div.style.cursor = 'pointer';
+      div.textContent = 'row ' + i;
+      div.addEventListener('click', () => { div.textContent = 'row ' + i + ' clicked'; });
+      heavy.appendChild(div);
+    }
+  </script>
+</body>
+</html>

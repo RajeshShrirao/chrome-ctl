@@ -26,7 +26,7 @@ const (
 )
 
 func newDaemonCmd() *cobra.Command {
-	var start, stop, foreground bool
+	var start, stop, foreground, disableEval bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run or manage the local daemon",
@@ -36,23 +36,24 @@ func newDaemonCmd() *cobra.Command {
 			addr := config.DefaultAddr()
 			switch {
 			case start:
-				return startDaemon(cmd, addr, paths)
+				return startDaemon(cmd, addr, paths, disableEval)
 			case stop:
 				return stopDaemon(cmd, addr, paths)
 			default:
-				return runForeground(cmd, addr, paths)
+				return runForeground(cmd, addr, paths, disableEval)
 			}
 		},
 	}
 	cmd.Flags().BoolVar(&start, "start", false, "Start the daemon in the background")
 	cmd.Flags().BoolVar(&stop, "stop", false, "Stop the running daemon")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the daemon in the foreground")
+	cmd.Flags().BoolVar(&disableEval, "no-eval", false, "Disable the eval command (page script execution)")
 	cmd.MarkFlagsMutuallyExclusive("start", "stop")
 	_ = cmd.Flags().MarkHidden("foreground")
 	return cmd
 }
 
-func runForeground(cmd *cobra.Command, addr string, paths config.Paths) error {
+func runForeground(cmd *cobra.Command, addr string, paths config.Paths, disableEval bool) error {
 	out := cmd.OutOrStdout()
 	if err := paths.Ensure(); err != nil {
 		return err
@@ -79,14 +80,15 @@ func runForeground(cmd *cobra.Command, addr string, paths config.Paths) error {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	return daemon.Run(ctx, daemon.Config{
-		Addr:    addr,
-		Version: buildinfo.Version,
-		Paths:   paths,
-		Log:     logger,
+		Addr:        addr,
+		Version:     buildinfo.Version,
+		Paths:       paths,
+		Log:         logger,
+		DisableEval: disableEval,
 	})
 }
 
-func startDaemon(cmd *cobra.Command, addr string, paths config.Paths) error {
+func startDaemon(cmd *cobra.Command, addr string, paths config.Paths, disableEval bool) error {
 	out := cmd.OutOrStdout()
 	if err := paths.Ensure(); err != nil {
 		return err
@@ -110,7 +112,12 @@ func startDaemon(cmd *cobra.Command, addr string, paths config.Paths) error {
 	}
 	defer logFile.Close()
 
-	child := exec.Command(exe, "daemon", "--foreground")
+	args := []string{"daemon", "--foreground"}
+	if disableEval {
+		// The gate must survive the background re-exec, or --no-eval is lost.
+		args = append(args, "--no-eval")
+	}
+	child := exec.Command(exe, args...)
 	child.Stdout = logFile
 	child.Stderr = logFile
 	child.Env = os.Environ()

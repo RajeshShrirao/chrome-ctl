@@ -1,5 +1,5 @@
 import { watch as watchFs } from "node:fs";
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, context } from "esbuild";
@@ -50,6 +50,7 @@ async function copyStatic() {
   await mkdir(path.join(dist, "offscreen"), { recursive: true });
   await mkdir(path.join(dist, "popup"), { recursive: true });
   await Promise.all(staticFiles.map(([from, to]) => copyFile(from, to)));
+  await cp(path.join(root, "icons"), path.join(dist, "icons"), { recursive: true });
 }
 
 async function runOnce() {

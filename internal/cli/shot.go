@@ -88,5 +88,8 @@ func formatShot(result protocol.MediaShotResult) string {
 	if result.SomBadgeCount > 0 {
 		out += fmt.Sprintf(", %d badges", result.SomBadgeCount)
 	}
+	if result.CapturePath == "cdp" {
+		out += ", via CDP fallback (captureVisibleTab failed)"
+	}
 	return out + ")\n"
 }

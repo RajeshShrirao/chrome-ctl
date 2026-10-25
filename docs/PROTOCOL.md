@@ -241,7 +241,9 @@ Scans visible DOM and extracts the ultra-compact indexed element map.
   {
     "tabId"?: 102,
     "all"?: false,
-    "formsOnly"?: false
+    "formsOnly"?: false,
+    "deep"?: false,
+    "maxElements"?: 400
   }
   ```
 * **Result:**
@@ -250,6 +252,9 @@ Scans visible DOM and extracts the ultra-compact indexed element map.
     "tabId": 102,
     "title": "LinkedIn - Feed",
     "url": "https://www.linkedin.com/feed/",
+    "docId": "0f1e2d3c-...",
+    "snapshotId": 3,
+    "omitted": 0,
     "viewport": {
       "scrollY": 0,
       "viewportHeight": 900,
@@ -282,26 +287,73 @@ Scans visible DOM and extracts the ultra-compact indexed element map.
         "h": 48
       }
     ],
-    "formattedText": "TAB [102] LinkedIn - Feed | https://www.linkedin.com/feed/\nVIEWPORT: 0-900px of 4200px (21%)\n[1] <input:text> \"Search\" () @310,28\n[2] <button> \"Start a post\" @540,135"
+    "formattedText": "SNAP 3 | TAB [102] LinkedIn - Feed | https://www.linkedin.com/feed/\nVIEWPORT: 0-900px of 4200px (21%)\n[1] <input:text> \"Search\" () @310,28\n[2] <button> \"Start a post\" @540,135"
   }
   ```
 
+IDs are unique for the life of a document (`docId`) and never reused. Each snapshot increments `snapshotId`; the tag also appears as the `SNAP <n> |` prefix. `deep` adds rows, grid cells, and cursor-only candidates; `maxElements` caps the map (default 400) and `omitted` reports how many candidates were skipped. A footer line `OMITTED: n candidates` is appended when the cap is hit.
+
 #### `page.read`
-Extracts readable markdown/text from the page or a specific container.
+Extracts readable markdown, tables, or links from the page or a specific container.
 * **Params:**
   ```json
   {
     "tabId"?: 102,
     "id"?: 3,
-    "selector"?: "main"
+    "selector"?: "main",
+    "mode"?: "markdown | tables | links",
+    "maxTables"?: 10,
+    "maxLinks"?: 200
   }
   ```
-* **Result:**
+* **Result (markdown, default):**
   ```json
   {
     "markdown": "# Feed\n\n**Rahul Verma** posted: Just launched our new pipeline..."
   }
   ```
+* **Result (tables):**
+  ```json
+  {
+    "tables": [
+      {
+        "index": 1,
+        "caption": "Revenue",
+        "headers": ["Region", "Q1"],
+        "rows": [["North", "10"], ["South", "20"]]
+      }
+    ],
+    "truncated": false
+  }
+  ```
+* **Result (links):** `{ "links": [{ "text": "Docs", "href": "https://example.com/docs" }], "truncated": false }`
+
+Links are deduplicated by absolute URL; `javascript:` and fragment-only hrefs are skipped. Tables promote `thead th`, then the first row with `th`, then row 1 as headers; that header row is not repeated in `rows`.
+
+#### `page.wait`
+Waits for a selector, body text, DOM idle, or network quiet. Timeouts return `matched: false` rather than an error.
+* **Params:**
+  ```json
+  {
+    "tabId"?: 102,
+    "selector"?: "#results",
+    "text"?: "Panel ready",
+    "ignoreCase"?: false,
+    "idle"?: false,
+    "network"?: false,
+    "quietMs"?: 500,
+    "timeoutMs"?: 15000
+  }
+  ```
+* **Result:**
+  ```json
+  {
+    "waitedMs": 8420,
+    "matched": true,
+    "requests": 23
+  }
+  ```
+When `network` is true the daemon counts in-flight CDP requests and resolves when the count is zero and no request activity occurred for `quietMs`. If the debugger cannot enable the Network domain (for example, DevTools owns the tab) the call fails with `-32004` instead of returning an empty result. `text` waits on rendered body text; `selector`, `text`, and `network` may be combined, and all conditions must hold before the same deadline.
 
 ---
 
@@ -313,11 +365,13 @@ Executes Bézier trajectory mouse movement and dispatches trusted mouse click ev
   ```json
   {
     "tabId"?: 102,
-    "id": 2,
+    "id"?: 2,
+    "at"?: { "x": 542, "y": 138 },
     "doubleClick"?: false,
     "snap"?: true
   }
   ```
+* Exactly one of `id` or `at` is required. `at` is an exact viewport point in CSS pixels, as printed by `page.snap`; it is not a screenshot pixel.
 * **Result:**
   ```json
   {
@@ -325,10 +379,13 @@ Executes Bézier trajectory mouse movement and dispatches trusted mouse click ev
     "action": "click",
     "target": { "id": 2, "tag": "button", "label": "Start a post" },
     "coordinates": { "x": 542, "y": 138 },
+    "landedOn": "<button> \"Start a post\"",
+    "urlChanged": false,
     "durationMs": 340,
     "snapshot"?: { /* Included if snap == true */ }
   }
   ```
+`target` is omitted for coordinate clicks. `landedOn` names the topmost element at the click point and `urlChanged` compares the tab URL ~150 ms after dispatch. Both describe what the input hit, not whether the application accepted it.
 
 #### `action.type`
 Focuses target element and dispatches cadence keystrokes with variable delays and optional typos.
@@ -350,9 +407,13 @@ Focuses target element and dispatches cadence keystrokes with variable delays an
     "charsTyped": 36,
     "durationMs": 2450,
     "typosInjected": 1,
+    "verified": true,
+    "verification": "exact",
+    "readBack": "Hello world! We are launching today.",
     "stateDelta": "[6] <button:submit> \"Send\" is now (enabled)"
   }
   ```
+`verification` is `exact`, `normalized` (whitespace-only difference), `empty`, or `mismatch`. The value is read back before any `enter` keystroke, with retries over 0/120/300 ms to absorb framework commit latency. `verified: false` with `empty` usually means a readonly or fully controlled field rejected the input.
 
 #### `action.press`
 Dispatches a trusted individual key press (`Enter`, `Tab`, `Escape`, `ArrowDown`, etc.).
@@ -447,9 +508,11 @@ Captures optimized WebP screenshot with optional Set-of-Mark overlays.
     "fileSizeBytes": 38400,
     "width": 1024,
     "height": 576,
-    "somBadgeCount": 18
+    "somBadgeCount": 18,
+    "capturePath": "captureVisibleTab"
   }
   ```
+`capturePath` is `captureVisibleTab` normally, or `cdp` when `chrome.tabs.captureVisibleTab` failed and the daemon retried through `Page.captureScreenshot`. When both paths fail, the error names both causes.
 
 #### `media.rec_start` & `media.rec_stop`
 Controls 2 FPS WebM recording or contact sheet grid generation.
@@ -501,6 +564,92 @@ When replay cannot resolve or perform a step, `macro.run` fails with code `-3200
 
 ---
 
+### 3.7 Diagnostic & Escape-Hatch Methods
+
+#### `page.attr`
+Returns one element's identity, attributes, and geometry. Address it by snapshot `id` or by CSS `selector`.
+* **Params:**
+  ```json
+  {
+    "tabId"?: 102,
+    "id"?: 12,
+    "selector"?: "div[role=combobox]"
+  }
+  ```
+* **Result:**
+  ```json
+  {
+    "docId": "0f1e2d3c-...",
+    "snapshotId": 3,
+    "tag": "a",
+    "role": "link",
+    "type": "",
+    "label": "Documentation",
+    "value": "",
+    "state": "",
+    "href": "https://example.com/docs",
+    "src": "",
+    "name": "",
+    "elementId": "docs-link",
+    "rect": { "x": 40, "y": 180, "w": 120, "h": 20 },
+    "attributes": { "href": "/docs", "class": "nav-link" },
+    "matches": 1
+  }
+  ```
+`href` and `src` are resolved against `document.baseURI`. `matches` counts CSS matches and is `1` for snapshot IDs.
+
+#### `page.eval`
+Evaluates a JavaScript expression through CDP `Runtime.evaluate` on the attached tab. Page CSP does not apply because the script runs in the debugger's execution context.
+* **Params:**
+  ```json
+  {
+    "tabId"?: 102,
+    "expression": "document.title",
+    "awaitPromise"?: false,
+    "timeoutMs"?: 5000
+  }
+  ```
+* **Result:** `{ "json": "LinkedIn - Feed", "type": "string", "truncated": false }`
+* `json` is the JSON-serialised value. Values that cannot be returned by value are retried through a `JSON.stringify(...)` wrapper. Output is capped at 100 000 characters; `truncated` flags a cut.
+* A disabled daemon rejects this method with `-32011 FEATURE_DISABLED`. Every accepted call is audit-logged with the tab id, result type, and the expression truncated to 120 characters.
+
+#### `page.net`
+Returns requests observed while the debugger was attached.
+* **Params:**
+  ```json
+  {
+    "tabId"?: 102,
+    "errorsOnly"?: false,
+    "limit"?: 50,
+    "sinceMs"?: 300000
+  }
+  ```
+* **Result:**
+  ```json
+  {
+    "entries": [
+      {
+        "requestId": "1042.7",
+        "url": "https://example.com/api/items",
+        "method": "GET",
+        "type": "Fetch",
+        "status": 200,
+        "startedAt": 1729725600123,
+        "durationMs": 182
+      }
+    ],
+    "enabledAt": 1729725599000,
+    "note": "collected only while the debugger is attached; enable via an action or wait --network"
+  }
+  ```
+`errorsOnly` keeps entries with a network error or status ≥ 400. Entries are capped at 200 per tab, WebSocket/EventSource traffic is ignored, and `enabledAt` is `0`/absent until the Network domain has been enabled on the tab. `sinceMs` filters by request start time relative to now.
+
+#### Snapshot identity on id-bearing requests
+
+The service worker caches `{docId, snapshotId}` from the latest `page.snap` per tab and injects `expectedDocId` into content requests that address a snapshot id (`target`, `focus`, `describe`, id-scoped `read` and `attr`). If the page navigated in between, the content script rejects the request with `-32010 SNAPSHOT_STALE` before touching the DOM. The cache is cleared on `chrome.tabs.onUpdated` (`loading` or URL change) and `tabs.onRemoved`.
+
+---
+
 ## 4. Error Code Reference
 
 | Code | Name | Description |
@@ -514,3 +663,6 @@ When replay cannot resolve or perform a step, `macro.run` fails with code `-3200
 | **`-32006`** | `AUTH_UNAUTHORIZED` | Invalid or missing security token during handshake. |
 | **`-32007`** | `NAVIGATION_FAILED` | Target URL failed to resolve, DNS error, or connection reset. |
 | **`-32008`** | `MACRO_STEP_FAILED` | A macro step could not resolve or perform its target; data carries a fresh snapshot. |
+| **`-32009`** | `DISPATCHED_UNCONFIRMED` | The request reached the extension but no acknowledgement arrived before the deadline. The side effect may have occurred; data carries `{ method, timeoutMs }`. |
+| **`-32010`** | `SNAPSHOT_STALE` | The page navigated or reloaded since the snapshot that produced the referenced ID; take a new snapshot. |
+| **`-32011`** | `FEATURE_DISABLED` | The method is disabled on this daemon (currently `page.eval` with `--no-eval`). |

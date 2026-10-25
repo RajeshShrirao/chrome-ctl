@@ -5,15 +5,18 @@
  */
 
 import type {
+  ContentAttrPayload,
   ContentStateEntry,
   ContentTargetPayload,
   ContentWaitPayload,
   ContentMetricsPayload,
-} from "../shared/content.js";
+} from "../shared/content.ts";
 import { effectiveInputType } from "./forms.ts";
+import { roleFor } from "./describe.ts";
 import {
   computeViewport,
   labelFor,
+  stateTokens,
   truncateText,
   typeToken,
   viewportRect,
@@ -25,6 +28,7 @@ const MIN_INTERACTABLE_PX = 1;
 const WAIT_DEFAULT_MS = 10_000;
 const WAIT_MAX_MS = 30_000;
 const IDLE_SETTLE_MS = 600;
+const READBACK_MAX_CHARS = 1_000;
 
 const NON_EDITABLE_INPUT_TYPES = new Set([
   "hidden",
@@ -264,8 +268,7 @@ function toRectLike(rect: DOMRect): RectLike {
   };
 }
 
-/** Build a fresh target payload for an already-resolved element. */
-export function describeTargetElement(
+/** Build a fresh target payload for an already-resolved element. */export function describeTargetElement(
   doc: Document,
   el: Element,
   id: number,
@@ -300,6 +303,145 @@ export function buildTargetPayload(
   id: number,
 ): ContentTargetPayload {
   return describeTargetElement(doc, resolveIndexedElement(index, id), id);
+}
+
+export interface ElementValue {
+  value: string;
+  length: number;
+  kind: "value" | "text";
+  editable: boolean;
+}
+
+/** Current value of an indexed element: control value, contenteditable text, or textContent. */
+export function readIndexedValue(
+  doc: Document,
+  index: Map<number, Element> | undefined,
+  id: number,
+): ElementValue {
+  const el = resolveIndexedElement(index, id);
+  const tag = el.tagName.toLowerCase();
+  let value = "";
+  let kind: "value" | "text" = "text";
+
+  if (tag === "input" || tag === "textarea") {
+    const raw = (el as HTMLInputElement | HTMLTextAreaElement).value;
+    value = typeof raw === "string" ? raw : "";
+    kind = "value";
+  } else if (el.getAttribute("contenteditable") === "true") {
+    value = (el as HTMLElement).innerText ?? el.textContent ?? "";
+  } else {
+    value = el.textContent ?? "";
+  }
+
+  if (value.length > READBACK_MAX_CHARS) {
+    value = value.slice(0, READBACK_MAX_CHARS);
+  }
+
+  return {
+    value,
+    length: value.length,
+    kind,
+    editable: isEditableElement(el),
+  };
+}
+
+/** Human-readable description of the topmost element at a viewport point. */
+export function elementAtPoint(doc: Document, x: number, y: number): string {
+  const fn = doc.elementFromPoint;
+  if (typeof fn !== "function") {
+    return "";
+  }
+  let hit: Element | null = null;
+  try {
+    hit = fn.call(doc, x, y);
+  } catch {
+    return "";
+  }
+  if (hit === null || hit === undefined) {
+    return "";
+  }
+  const tag = hit.tagName.toLowerCase();
+  const label = truncateText(labelFor(hit, hit.ownerDocument ?? doc), LABEL_MAX_CHARS);
+  return label === "" ? `<${tag}>` : `<${tag}> "${label}"`;
+}
+
+const ATTR_VALUE_MAX_CHARS = 1_000;
+
+function absoluteURL(doc: Document, raw: string | null): string {
+  if (raw === null || raw === "") {
+    return "";
+  }
+  try {
+    return new URL(raw, doc.baseURI).toString();
+  } catch {
+    return raw;
+  }
+}
+
+/** Resolve one element by id or selector and return its identity and attributes. */
+export function buildAttrPayload(
+  doc: Document,
+  index: Map<number, Element> | undefined,
+  params: { id?: number; selector?: string },
+): Omit<ContentAttrPayload, "docId" | "snapshotId"> {
+  let el: Element;
+  let matches = 1;
+
+  if (typeof params.id === "number") {
+    el = resolveIndexedElement(index, params.id);
+  } else if (typeof params.selector === "string" && params.selector !== "") {
+    let found: Element[];
+    try {
+      found = Array.from(doc.querySelectorAll(params.selector));
+    } catch (error) {
+      throw new Error(`invalid selector "${params.selector}": ${errorText(error)}`);
+    }
+    if (found.length === 0) {
+      throw new Error(`selector "${params.selector}" matched no elements`);
+    }
+    el = found[0];
+    matches = found.length;
+  } else {
+    throw new Error("id or selector is required");
+  }
+
+  const rect = viewportRect(el);
+  const tag = el.tagName.toLowerCase();
+  let value = "";
+  if (tag === "input" || tag === "textarea" || tag === "select") {
+    value = String((el as HTMLInputElement).value ?? "");
+  } else if (el.getAttribute("contenteditable") === "true") {
+    value = (el as HTMLElement).innerText ?? "";
+  }
+  if (value.length > ATTR_VALUE_MAX_CHARS) {
+    value = value.slice(0, ATTR_VALUE_MAX_CHARS);
+  }
+
+  const attributes: Record<string, string> = {};
+  for (const attribute of Array.from(el.attributes)) {
+    attributes[attribute.name] = attribute.value;
+  }
+
+  return {
+    tag,
+    role: roleFor(el),
+    type: typeToken(el),
+    label: truncateText(labelFor(el, el.ownerDocument ?? doc), LABEL_MAX_CHARS),
+    value,
+    state: stateTokens(el).join(", "),
+    href: absoluteURL(doc, el.getAttribute("href")),
+    src: absoluteURL(doc, el.getAttribute("src")),
+    name: el.getAttribute("name") ?? "",
+    elementId: el.getAttribute("id") ?? "",
+    rect: {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      w: Math.round(rect.width),
+      h: Math.round(rect.height),
+    },
+    attributes,
+    matches,
+  };
 }
 
 /** Scroll the element into view and move the caret to the end of its content. */
@@ -422,6 +564,8 @@ export function buildStateEntries(
 
 export interface WaitOptions {
   selector?: string;
+  text?: string;
+  ignoreCase?: boolean;
   idle?: boolean;
   timeoutMs?: number;
 }
@@ -442,13 +586,35 @@ function mutationObserverFor(doc: Document): (new (callback: MutationCallback) =
   return typeof ctor === "function" ? (ctor as unknown as new (cb: MutationCallback) => ObserverLike) : null;
 }
 
+function documentText(doc: Document): string {
+  const body = doc.body;
+  if (!body) {
+    return "";
+  }
+  const inner = (body as HTMLElement).innerText;
+  return typeof inner === "string" ? inner : (body.textContent ?? "");
+}
+
+/** Case-sensitive by default; `ignoreCase` folds both sides. */
+export function textPresent(doc: Document, needle: string, ignoreCase = false): boolean {
+  if (needle === "") {
+    return true;
+  }
+  const haystack = documentText(doc);
+  return ignoreCase
+    ? haystack.toLowerCase().includes(needle.toLowerCase())
+    : haystack.includes(needle);
+}
+
 /**
- * Wait for a selector to appear, or for the page to go idle. Never rejects on
- * timeout; only an invalid selector is rejected.
+ * Wait for a selector to appear, for body text to appear, or for the page to go
+ * idle. Never rejects on timeout; only an invalid selector is rejected.
  */
 export function waitForContent(doc: Document, options: WaitOptions): Promise<ContentWaitPayload> {
   const timeoutMs = clampTimeout(options.timeoutMs);
   const selector = typeof options.selector === "string" ? options.selector : undefined;
+  const text = typeof options.text === "string" && options.text !== "" ? options.text : undefined;
+  const ignoreCase = options.ignoreCase === true;
 
   if (selector !== undefined) {
     try {
@@ -465,12 +631,17 @@ export function waitForContent(doc: Document, options: WaitOptions): Promise<Con
     let finished = false;
     let timer: TimeoutHandle | undefined;
     let settle: TimeoutHandle | undefined;
+    let poll: ReturnType<typeof setInterval> | undefined;
     let observer: ObserverLike | null = null;
 
     const cleanup = (): void => {
       if (timer !== undefined) {
         clearTimeout(timer);
         timer = undefined;
+      }
+      if (poll !== undefined) {
+        clearInterval(poll);
+        poll = undefined;
       }
       if (settle !== undefined) {
         clearTimeout(settle);
@@ -522,6 +693,31 @@ export function waitForContent(doc: Document, options: WaitOptions): Promise<Con
         }
       });
       observer.observe(root, { childList: true, subtree: true, attributes: true });
+      return;
+    }
+
+    if (text !== undefined) {
+      const matches = (): boolean => textPresent(doc, text, ignoreCase);
+      if (matches()) {
+        finish(true);
+        return;
+      }
+      // MutationObserver catches commits; the poll covers sites that swap
+      // data into existing text nodes without a mutation the observer batches.
+      const tick = (): void => {
+        if (matches()) {
+          finish(true);
+        }
+      };
+      poll = setInterval(tick, 150);
+      if (observerCtor && root !== null) {
+        observer = new observerCtor(tick);
+        observer.observe(root, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+      }
       return;
     }
 

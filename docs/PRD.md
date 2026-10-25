@@ -116,6 +116,7 @@ When an agent completes an important, repeatable task (or records one), it can s
 | Category | Command Syntax | Description |
 | --- | --- | --- |
 | **Session & Tab** | `chrome-ctl status` | Check daemon & Chrome extension connection status. |
+|  | `chrome-ctl url` | Print the active tab's URL (cheap "where am I" call). |
 |  | `chrome-ctl tabs [--window <id>]` | List open tabs with `[TabID] Title - URL`. |
 |  | `chrome-ctl open <url> [--new] [--window <id>]` | Navigate current tab or open a new tab. |
 |  | `chrome-ctl switch <tab_id>` | Switch active control to specified tab. |
@@ -124,22 +125,32 @@ When an agent completes an important, repeatable task (or records one), it can s
 |  | `chrome-ctl window new [url] [--foreground]` | Force a fresh automation window. |
 |  | `chrome-ctl window use <id\|focused>` / `clear` | Point automation at another window, or stop targeting one. |
 |  | `chrome-ctl window close <id> [--force]` | Close a window; refuses the focused (user) window without `--force`. |
-| **Observation (Text)** | `chrome-ctl snap [--all] [--forms]` | Output ultra-compact indexed interactive element map. |
-|  | `chrome-ctl read [<id_or_selector>]` | Extract clean markdown text from page or specific container. |
+| **Observation (Text)** | `chrome-ctl snap [--all] [--forms] [--deep] [--max-elements N]` | Output ultra-compact indexed interactive element map. |
+|  | `chrome-ctl read [<id_or_selector>] [--tables\|--links] [--json]` | Extract markdown, structured tables, or link lists. |
+|  | `chrome-ctl describe <id_or_selector>` | Full attribute record for one element (role, state, href, rect, match count). |
+|  | `chrome-ctl href <id>` | Print the element's absolute, resolved href. |
 | **Observation (Visual)** | `chrome-ctl shot [--som] [--gray] [-o path]` | Capture token-optimized WebP screenshot (optional Set-of-Mark IDs). |
 |  | `chrome-ctl rec start [--fps 2]` | Start low-bitrate 2fps WebM or storyboard recording. |
 |  | `chrome-ctl rec stop [--grid] [-o path]` | Stop recording; outputs WebM file or a single stitched WebP grid. |
+| **Diagnostics** | `chrome-ctl net [--errors] [--since 5m] [--limit 50] [--json]` | Show recent CDP network activity for the tab. |
 | **Human Actions** | `chrome-ctl click <id>` | Humanized Bezier mouse move + trusted click on element `[id]`. |
-|  | `chrome-ctl type <id> "<text>" [--enter]` | Click element `[id]` and type with human cadence + optional Enter. |
+|  | `chrome-ctl clickat <x>,<y> [--double]` | Exact viewport CSS-pixel click for controls `snap` cannot see. |
+|  | `chrome-ctl type <id> "<text>" [--enter]` | Click element `[id]`, type with human cadence, verify the read-back. |
 |  | `chrome-ctl press <key>` | Send trusted key press (`Enter`, `Tab`, `Escape`, `ArrowDown`). |
-|  | `chrome-ctl scroll <down|up> [amount]` | Smooth momentum scroll (`amount` in viewports, default `0.8`). |
+|  | `chrome-ctl scroll <down\|up> [amount]` | Smooth momentum scroll (`amount` in viewports, default `0.8`). |
 |  | `chrome-ctl upload <id> <file_path>` | Attach local file (e.g., company logo, post image) to file input `[id]`. |
+| **Escape Hatch** | `chrome-ctl eval '<js>' [--raw] [--timeout 5000]` | Evaluate JS in the page via CDP; disabled with daemon `--no-eval`. |
 | **Auth & Helpers** | `chrome-ctl sso [--account <email>]` | Auto-complete active Google OAuth popup/redirect flow. |
-|  | `chrome-ctl wait <ms|selector|idle>` | Wait for human pause, element appearance, or network idle. |
+|  | `chrome-ctl wait <ms\|selector\|idle>` | Wait for a pause, element appearance, or DOM idle. |
+|  | `chrome-ctl wait --network [--quiet-ms 500]` | Wait until CDP-observed network activity goes quiet. |
+|  | `chrome-ctl wait --for-text "..." [--ignore-case]` | Wait until text appears anywhere in the page. |
+| **Bulk** | `chrome-ctl bulk <file\|-> --out <dir> [--template '...{{item}}']` | Visit many URLs/queries, write pages to files, emit a manifest. |
 | **Macro / Reuse** | `chrome-ctl macro start <name>` | Begin recording CLI actions into a reusable playbook. |
 |  | `chrome-ctl macro save [--params k1,k2]` | Save recorded steps to `~/.chrome-ctl/macros/<name>.json`. |
 |  | `chrome-ctl macro list` | List all saved reusable workflows and required parameters. |
 |  | `chrome-ctl macro run <name> --vars '<json>'` | Replay saved workflow locally with zero LLM token overhead. |
+
+Snapshot IDs are unique for the life of a document: `snap` never renumbers an existing element, so an old ID either resolves to the same element or reports `not found`. A navigation or reload invalidates every ID and is reported as `snapshot stale` (`-32010`). `snap` prints `SNAP <n> |` so the epoch is visible. Action success means the input was dispatched, not that the site accepted it; `type` reports `(verified)` or a `WARN` when the read-back is empty or mismatched.
 
 ---
 
@@ -174,193 +185,17 @@ OK: Typed 142 chars into [4] (human cadence: 4.8s). State changed: [6] <button:s
 
 ## 6. Agent Skill Definition (`SKILL.md`)
 
-Save the following file directly into your agent's skills directory (e.g., `~/.hermes/skills/chrome-ctl/SKILL.md` or `.claude/skills/chrome-ctl/SKILL.md`).
-
-```markdown
----
-name: chrome-ctl
-description: Control the user's authenticated Google Chrome browser with ultra-low token overhead, human-like anti-detection behavior, Google OAuth SSO handling, optimized visual snapshots/recordings, and self-learning workflow macros. Use for social media automation (LinkedIn, Instagram, Facebook), business directory registrations, lead outreach, and personal assistant browsing tasks.
----
-
-# Chrome Control (`chrome-ctl`) Agent Skill
-
-You have access to `chrome-ctl`, a high-efficiency CLI bridge connected to the user's real, logged-in Google Chrome browser. 
-
-## Core Principles for Token & Stealth Efficiency
-
-1. **NEVER request raw HTML.** Always use `chrome-ctl snap` to get a compact list of interactive element IDs (`[1]`, `[2]`, etc.), or `chrome-ctl snap --forms` when filling out registrations.
-2. **Chain `--snap` to save turns.** When an action changes the UI (e.g., clicking a button or opening a modal), append `--snap` (`chrome-ctl click 5 --snap`) to perform the action and get the updated element map in a single command.
-3. **Use Visuals Strategically.** Only call `chrome-ctl shot` when:
-   - Text snapshot (`snap`) is ambiguous (e.g., icon-only buttons, canvas UI, Instagram story editors).
-   - You need to verify visual layout or provide proof of task completion.
-   - Always prefer `chrome-ctl shot --som` (Set-of-Mark) so visual elements have matching `[ID]` badges drawn on them.
-4. **Check Macros First.** Before starting a multi-step administrative or outreach task, run `chrome-ctl macro list` to see if a learned workflow already exists.
-
----
-
-## 1. Standard Operating Loop (Observe -> Act -> Verify)
-
-### Step 1: Open or Attach to Tab
-```bash
-chrome-ctl tabs
-chrome-ctl open "[https://www.linkedin.com](https://www.linkedin.com)"
-
-```
-
-### Step 2: Distill Interactive Elements (`snap`)
-
-```bash
-chrome-ctl snap
-
-```
-
-*Output Example:*
-
-```text
-TAB [2] Feed | LinkedIn | [https://www.linkedin.com/feed/](https://www.linkedin.com/feed/)
-VIEWPORT: 0-900px of 4200px (21%)
-[1] <input:text> "Search" () @310,28
-[2] <button> "Start a post" @540,135
-[3] <a:link> "My Network" @420,28
-[4] <a:link> "Messaging" @610,28
-
-```
-
-### Step 3: Execute Humanized Actions
-
-All `click`, `type`, and `scroll` commands automatically simulate human Bezier mouse curves, variable typing cadence, and natural delays.
-
-```bash
-# Click "Start a post" and immediately get the modal snapshot
-chrome-ctl click 2 --snap
-
-# Type content with human cadence into element [12]
-chrome-ctl type 12 "Just shipped a new AI automation pipeline for our clients. Here is how we cut latency by 60%..."
-
-# Attach media if needed
-chrome-ctl upload 14 "/path/to/graphic.webp"
-
-# Submit post
-chrome-ctl click 18
-
-```
-
----
-
-## 2. Social Media Pacing & Anti-Detection Rules (Instagram, LinkedIn, Facebook)
-
-When operating on social networks for outreach, connection building, or posting, strictly follow these behavioral guardrails:
-
-1. **Context Warming:** Before sending a direct message or connection request on LinkedIn/Instagram, scroll the target's profile first (`chrome-ctl scroll down 0.6`), pause (`chrome-ctl wait 2500`), and optionally view a post. Do not jump straight to URL -> Click Connect -> Close Tab in under 2 seconds.
-2. **Rate Pacing:** Insert randomized human pauses (`chrome-ctl wait 3000-7000`) between outreach iterations.
-3. **Draft Verification:** Before clicking final "Post" or "Send" on high-stakes outreach, run `chrome-ctl shot --gray -o /tmp/verify.webp` if you need to confirm formatting or media attachment.
-
----
-
-## 3. Google OAuth SSO & Directory Registrations
-
-Because `chrome-ctl` runs in the user's authenticated Chrome profile, you can register the user's business (e.g., web development studio, SaaS listings, Clutch, DesignRush, GoodFirms, local directories) without inventing passwords whenever Google Sign-In is available:
-
-1. **Attempt Google SSO First:**
-Look for `"Continue with Google"` or `"Sign in with Google"` in `chrome-ctl snap`.
-```bash
-chrome-ctl click <google_btn_id>
-chrome-ctl sso
-
-```
-
-
-`chrome-ctl sso` automatically handles the Google account picker popup/redirect and returns once the parent site logs in.
-2. **Fast Form Filling (`--forms`):**
-On registration forms, filter noise by running:
-```bash
-chrome-ctl snap --forms
-
-```
-
-
-This returns only `<input>`, `<select>`, `<textarea>`, and `<button:submit>` elements so you can map company details (Name, Website URL, Description, Location, Logo upload) with minimal tokens.
-
----
-
-## 4. Visual Snapshots & Task Verification Recordings
-
-### Taking Token-Optimized Screenshots
-
-* **Standard Verification:** `chrome-ctl shot -o /tmp/proof.webp` (outputs ~40KB compressed WebP).
-* **Element Disambiguation:** `chrome-ctl shot --som -o /tmp/som.webp` (draws `[ID]` numbers on top of every clickable element in the image).
-
-### Recording a Task Execution (Optimized Video / Storyboard)
-
-When executing an important task (e.g., publishing a campaign, submitting a company listing, or debugging a UI flow) where a visual audit trail is needed:
-
-1. **Start Recording before critical steps:**
-```bash
-chrome-ctl rec start --fps 2
-
-```
-
-
-2. **Perform the workflow actions (`click`, `type`, `scroll`).**
-3. **Stop and export:**
-* **For AI Agent Self-Review (Lowest Token Cost):** Export as a stitched `3x4` storyboard contact sheet (single WebP image showing the whole sequence):
-```bash
-chrome-ctl rec stop --grid -o /tmp/task_storyboard.webp
-
-```
-
-
-* **For Human User Review:** Export as an ultra-compact 2fps WebM video:
-```bash
-chrome-ctl rec stop -o /tmp/task_recording.webm
-
-```
-
-
-
-
-4. **Post-Task Snapshot:** Always take a final confirmation snapshot or screenshot after completing a state-changing task (e.g., registration confirmed, post live) to verify success before reporting back.
-
----
-
-## 5. Learning & Reusing Workflows (Macro Engine)
-
-Whenever you perform a repeatable task (e.g., *"Register company on a business directory"*, *"Send LinkedIn connection request + note to a founder"*, *"Post update to Instagram"*), turn it into a reusable zero-token macro:
-
-### How to Record & Teach Yourself a New Macro
-
-1. **Start Macro Recording:**
-```bash
-chrome-ctl macro start linkedin_founder_outreach
-
-```
-
-
-2. **Execute the task normally** using `open`, `snap`, `click`, `type`, `wait`.
-3. **Verify success** with `chrome-ctl snap` or `chrome-ctl shot`.
-4. **Save & Parameterize:**
-Replace dynamic values (like profile URL and custom message) with named parameters:
-```bash
-chrome-ctl macro save --params "profile_url,custom_note"
-
-```
-
-
-This saves the resilient selector path and humanized timing rules to `~/.chrome-ctl/macros/linkedin_founder_outreach.json`.
-
-### How to Reuse a Learned Macro (0 LLM Tokens)
-
-Next time you need to run the same task for a batch of leads or directories:
-
-```bash
-chrome-ctl macro list
-chrome-ctl macro run linkedin_founder_outreach --vars '{"profile_url": "[https://linkedin.com/in/example](https://linkedin.com/in/example)", "custom_note": "Hi Alex, loved your recent post on..."}'
-
-```
-
-*If a website layout changes and a macro step fails, `chrome-ctl` will pause at the exact failing step and output a fresh `snap` so you can take over, fix the step, and update the macro.*
-
-```
+The agent-facing skill ships at the repository root: [`SKILL.md`](../SKILL.md). This section intentionally does not duplicate it — an embedded copy drifted from the real file and taught outdated command syntax.
+
+Install it into your agent's skills directory (e.g. `~/.claude/skills/chrome-ctl/SKILL.md` or `~/.hermes/skills/chrome-ctl/SKILL.md`) by copying that file as-is. It is the authoritative guide for:
+
+* The observe → act → verify loop, including `url`, `describe`, and `SNAP <n> |` snapshot epochs.
+* Snapshot identities: globally unique IDs, navigation resets, and stale-ID recovery.
+* Reaching controls `snap` cannot see (`--deep`, `describe`, keyboard fallback, `clickat`, `eval`).
+* SPA waiting (`wait --network`, `wait --for-text`) versus DOM-only `wait idle`.
+* Structural extraction (`read --tables`, `read --links`), network history (`net`), and `bulk` runs.
+* Honest failure semantics: dispatched-but-unconfirmed timeouts, `WARN` read-backs, and capture fallbacks.
+* Web pitfalls agents routinely hit (guessed deep links, consent banners, controlled inputs, infinite scroll, rate limits, downloads) and where to stop and hand back to the user.
 
 ---
 

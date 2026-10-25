@@ -17,8 +17,8 @@ func TestFormatClick(t *testing.T) {
 	base := protocol.ActionClickResult{
 		Success:     true,
 		Action:      "click",
-		Target:      protocol.ActionTarget{ID: 2, Tag: "button", Label: "Start a post"},
-		Coordinates: protocol.ActionCoordinates{X: 542, Y: 138},
+		Target:      &protocol.ActionTarget{ID: 2, Tag: "button", Label: "Start a post"},
+		Coordinates: &protocol.ActionCoordinates{X: 542, Y: 138},
 		DurationMs:  340,
 	}
 
@@ -606,7 +606,7 @@ func TestWaitCommandIdleTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wait idle timeout error = %v, want nil", err)
 	}
-	if want := "OK: waited 10.0s (still busy)\n"; out != want {
+	if want := "WARN: DOM idle wait timed out after 10.0s; the page may still be fetching. Use wait --network or wait --for-text.\n"; out != want {
 		t.Errorf("wait idle timeout output = %q, want %q", out, want)
 	}
 }

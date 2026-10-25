@@ -16,10 +16,11 @@ const (
 	actionTypeTimeout   = 300 * time.Second
 	actionMediumTimeout = 60 * time.Second
 	actionPressTimeout  = 20 * time.Second
-	pageWaitTimeout     = 30 * time.Second
+	pageWaitTimeout     = 45 * time.Second
 	mediaCaptureTimeout = 30 * time.Second
 	pageDescribeTimeout = 5 * time.Second
 	pageResolveTimeout  = 20 * time.Second
+	pageEvalTimeout     = 35 * time.Second
 	authSSOTimeout      = 60 * time.Second
 	windowCreateTimeout = 30 * time.Second
 )
@@ -42,6 +43,8 @@ func forwardTimeoutFor(method string, fallback time.Duration) time.Duration {
 		return pageDescribeTimeout
 	case protocol.MethodPageResolve:
 		return pageResolveTimeout
+	case protocol.MethodPageEval:
+		return pageEvalTimeout
 	case protocol.MethodAuthSSO:
 		return authSSOTimeout
 	case protocol.MethodWindowCreate, protocol.MethodWindowEnsure:
@@ -60,6 +63,15 @@ func (d *daemon) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Method == "" {
 		writeJSON(w, http.StatusOK, protocol.Failure(req.ID, protocol.ErrInvalidRequest, "invalid JSON-RPC method"))
+		return
+	}
+
+	if req.Method == protocol.MethodPageEval && d.cfg.DisableEval {
+		writeJSON(w, http.StatusOK, protocol.Failure(
+			req.ID,
+			protocol.ErrFeatureDisabled,
+			"eval is disabled on this daemon; stop it and run `chrome-ctl daemon --start` without --no-eval to re-enable",
+		))
 		return
 	}
 
@@ -148,7 +160,8 @@ func (d *daemon) forward(ctx context.Context, req protocol.Request) (json.RawMes
 		return nil, &protocol.RPCError{Code: protocol.ErrConnection, Message: "failed to send request to extension"}
 	}
 
-	timer := time.NewTimer(forwardTimeoutFor(req.Method, d.cfg.ForwardTimeout))
+	timeout := forwardTimeoutFor(req.Method, d.cfg.ForwardTimeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case resp := <-ch:
@@ -158,10 +171,21 @@ func (d *daemon) forward(ctx context.Context, req protocol.Request) (json.RawMes
 		return resp.Result, nil
 	case <-timer.C:
 		d.removePending(id)
-		return nil, &protocol.RPCError{Code: protocol.ErrConnection, Message: "extension response timeout"}
+		return nil, &protocol.RPCError{
+			Code:    protocol.ErrDispatchedUnconfirmed,
+			Message: fmt.Sprintf("request dispatched but no ack after %s", timeout),
+			Data: map[string]any{
+				"method":    req.Method,
+				"timeoutMs": timeout.Milliseconds(),
+			},
+		}
 	case <-ctx.Done():
 		d.removePending(id)
-		return nil, &protocol.RPCError{Code: protocol.ErrConnection, Message: "request cancelled"}
+		return nil, &protocol.RPCError{
+			Code:    protocol.ErrDispatchedUnconfirmed,
+			Message: "request cancelled after dispatch",
+			Data:    map[string]any{"method": req.Method},
+		}
 	}
 }
 

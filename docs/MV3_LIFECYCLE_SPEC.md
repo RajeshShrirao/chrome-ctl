@@ -131,26 +131,40 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 The content script runs in the context of the web page and handles:
 1. Viewport geometry calculation.
 2. Identification of interactive nodes.
-3. Assignment of sequential element IDs (`[1]`, `[2]`, `[3]`).
+3. Assignment of globally unique element IDs (see §4.1).
 4. Set-of-Mark (SoM) overlay badge rendering.
 
 ### 4.1 Index Map Caching & Stale Target Prevention
-* Each time `page.snap` is requested, the content script increments a monotonic `snapshotId`.
-* An in-memory array `indexedElements: ElementRecord[]` is populated:
-  ```typescript
-  interface ElementRecord {
-    id: number;
-    element: Element;
-    rect: DOMRect;
-    tag: string;
-    label: string;
-  }
-  ```
-* When an action command arrives targeting `id: 4`:
-  * The content script looks up `indexedElements[4]`.
-  * Verifies `element.isConnected === true` (is still attached to DOM).
-  * Calls `element.getBoundingClientRect()` to get fresh coordinates (in case of dynamic reflow).
-  * Returns fresh viewport center $(x, y)$ coordinates to the service worker to dispatch via `chrome.debugger`.
+
+**Status: implemented.** The design below replaced the original "renumber `1..n` on every snap" scheme, which silently aliased old IDs onto different elements after a re-render.
+
+**Identity.** The content script keeps three values on the page's isolated-world `window` scope, so re-injecting the script does not reset them for the same document:
+
+```typescript
+window.__chromeCtlNextId = 1;                          // never decreases, never reused
+window.__chromeCtlSnapshotId = 0;                      // increments once per page.snap
+window.__chromeCtlDocId = crypto.randomUUID();         // one per document instance
+```
+
+* `snapshot(doc, options, startId)` assigns `startId … startId+n-1`, so a snap only adds IDs; it never renumbers an element that already had one.
+* The live map stays at `window.__chromeCtlIndex = Map<number, Element>`.
+* On each snap the content script prunes entries whose `element.isConnected === false`, then **merges** the new `byId` entries into the existing map instead of replacing it.
+* Merging is only safe because IDs are never reused: an old ID either still resolves to the same element or is absent (reported as `not found`). It can never alias a different control. Replaced elements are removed by the `isConnected` prune, so detached DOM does not accumulate indefinitely.
+* `docId` is regenerated automatically on reload or navigation because the content script is re-injected, and `nextId` restarts at 1 in the new document.
+
+**Epoch propagation.** `page.snap` returns `{docId, snapshotId, omitted, …}` and its formatted text starts with `SNAP <snapshotId> | TAB […]`. The service worker caches the last `{docId, snapshotId}` per tab and:
+* injects `expectedDocId` into every id-bearing content request (`target`, `clickAt` lookup, `focus`, `value`, `attr`, `read`);
+* clears the cache on `chrome.tabs.onUpdated` with `status: "loading"` and on `onRemoved`.
+
+A content request whose `expectedDocId` does not match the live `docId` throws `snapshot stale: page changed since snapshot <n>; run snap`, surfaced to the CLI as `-32010 SNAPSHOT_STALE`. The action is rejected **before** any input is dispatched.
+
+**Target resolution.** When an action command arrives targeting `id: 4`:
+* The content script looks up `__chromeCtlIndex.get(4)`; missing → `not found`.
+* Verifies `element.isConnected === true` (still attached to the DOM).
+* Calls `element.getBoundingClientRect()` for fresh coordinates (dynamic reflow).
+* Returns fresh viewport center $(x, y)$ plus `docId` for the service worker to dispatch via `chrome.debugger`.
+
+After a navigation, an old ID therefore fails closed rather than clicking whatever now occupies the same position. Agents are taught to re-snap after navigation and after layout-changing actions (see `SKILL.md`).
 
 ### 4.2 Dynamic Script Injection for Pre-Existing Tabs
 When the extension is installed or reloaded, tabs that were already open do not have the content script running. The service worker dynamically injects the content script upon first interaction:

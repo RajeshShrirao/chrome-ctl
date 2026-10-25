@@ -133,6 +133,7 @@ func (d *daemon) handleMediaShot(ctx context.Context, req protocol.Request) prot
 		Height:        result.Height,
 		SomBadgeCount: result.BadgeCount,
 		Gray:          params.Gray,
+		CapturePath:   capture.CapturePath,
 	})
 }
 

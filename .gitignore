@@ -6,6 +6,7 @@ build/
 *.dll
 *.so
 *.dylib
+*.crx
 chrome-ctl
 
 # Go

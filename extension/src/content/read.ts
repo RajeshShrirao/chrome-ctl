@@ -1,9 +1,11 @@
 /**
- * Pure markdown extraction for `page.read`.
+ * Pure markdown, table, and link extraction for `page.read`.
  *
  * No chrome.* access and no import-time DOM access: this module runs both in the
  * content script bundle and directly under jsdom in tests.
  */
+
+import type { ReadLink, ReadTable } from "../shared/protocol.js";
 
 const SKIP_TAGS = new Set([
   "script",
@@ -60,6 +62,11 @@ const BLOCK_TAGS = new Set([
 const HEADINGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
 
 const TRUNCATED_MARKER = "\n\n[truncated]";
+
+export const MAX_READ_TABLES = 10;
+export const MAX_TABLE_ROWS = 200;
+export const MAX_TABLE_CELLS = 50;
+export const MAX_READ_LINKS = 200;
 
 function collapseWhitespace(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -384,4 +391,184 @@ export function resolveReadElement(
   }
 
   return pickReadRoot(doc);
+}
+
+export interface ExtractedTables {
+  tables: ReadTable[];
+  truncated: boolean;
+}
+
+function rowCells(row: Element): Element[] {
+  return Array.from(row.children).filter((cell) => {
+    const tag = cell.tagName.toLowerCase();
+    return tag === "td" || tag === "th";
+  });
+}
+
+function headerCells(row: Element): string[] {
+  const headers = rowCells(row)
+    .filter((cell) => cell.tagName.toLowerCase() === "th")
+    .map((cell) => collapseWhitespace(cell.textContent));
+  if (headers.length > 0) {
+    return headers.slice(0, MAX_TABLE_CELLS);
+  }
+  return rowCells(row)
+    .slice(0, MAX_TABLE_CELLS)
+    .map((cell) => collapseWhitespace(cell.textContent));
+}
+
+function tableRows(table: Element): Element[] {
+  // Nested tables have their own rows; keep each table's extraction isolated.
+  return Array.from(table.querySelectorAll("tr")).filter(
+    (row) => row.closest("table") === table,
+  );
+}
+
+function extractTable(table: Element, index: number): ReadTable | null {
+  const rows = tableRows(table);
+  if (rows.length === 0) {
+    return null;
+  }
+
+  let headers: string[] = [];
+  let start = 0;
+
+  const theadRow = rows.find((row) => row.closest("thead")?.closest("table") === table);
+  if (theadRow) {
+    headers = headerCells(theadRow);
+    start = rows.indexOf(theadRow) + 1;
+  } else {
+    const thRowIndex = rows.findIndex((row) => row.querySelector("th") !== null);
+    if (thRowIndex >= 0) {
+      headers = headerCells(rows[thRowIndex]);
+      start = thRowIndex + 1;
+    } else {
+      headers = headerCells(rows[0]);
+      start = 1;
+    }
+  }
+
+  const body: string[][] = [];
+  for (let cursor = start; cursor < rows.length && body.length < MAX_TABLE_ROWS; cursor += 1) {
+    const cells = rowCells(rows[cursor])
+      .slice(0, MAX_TABLE_CELLS)
+      .map((cell) => collapseWhitespace(cell.textContent));
+    if (cells.length === 0) {
+      continue;
+    }
+    body.push(cells);
+  }
+
+  if (headers.length === 0 && body.length === 0) {
+    return null;
+  }
+
+  const caption = collapseWhitespace(table.querySelector("caption")?.textContent);
+  const result: ReadTable = {
+    index,
+    headers,
+    rows: body,
+  };
+  if (caption !== "") {
+    result.caption = caption;
+  }
+  return result;
+}
+
+/** Extract tables from a document or subtree as header + row arrays. */
+export function extractTables(
+  doc: Document,
+  root?: Element,
+  maxTables = MAX_READ_TABLES,
+): ExtractedTables {
+  const target = root ?? doc.body ?? doc.documentElement;
+  const limit = Math.max(1, Math.min(MAX_READ_TABLES, maxTables));
+  const tables: ReadTable[] = [];
+  let truncated = false;
+
+  const found: Element[] = Array.from(target.querySelectorAll("table"));
+  if (target.tagName.toLowerCase() === "table") {
+    found.unshift(target);
+  }
+  const allTables = found.filter((table) => !isHidden(doc, table));
+  for (const table of allTables) {
+    if (tables.length >= limit) {
+      truncated = true;
+      break;
+    }
+    const extracted = extractTable(table, tables.length + 1);
+    if (extracted) {
+      tables.push(extracted);
+      if (extracted.rows.length >= MAX_TABLE_ROWS) {
+        truncated = true;
+      }
+    }
+  }
+
+  if (allTables.length > limit) {
+    truncated = true;
+  }
+
+  return { tables, truncated };
+}
+
+export interface ExtractedLinks {
+  links: ReadLink[];
+  truncated: boolean;
+}
+
+function absoluteHref(doc: Document, raw: string): string {
+  try {
+    return new URL(raw, doc.baseURI).href;
+  } catch {
+    return raw;
+  }
+}
+
+/** Extract visible links as {text, absoluteHref}, deduped by href. */
+export function extractLinks(
+  doc: Document,
+  root?: Element,
+  maxLinks = MAX_READ_LINKS,
+): ExtractedLinks {
+  const target = root ?? doc.body ?? doc.documentElement;
+  const limit = Math.max(1, Math.min(MAX_READ_LINKS, maxLinks));
+  const links: ReadLink[] = [];
+  const seen = new Set<string>();
+  let truncated = false;
+
+  const anchors: Element[] = Array.from(target.querySelectorAll("a[href]"));
+  if (target.tagName.toLowerCase() === "a" && target.hasAttribute("href")) {
+    anchors.unshift(target);
+  }
+
+  for (const anchor of anchors) {
+    if (isHidden(doc, anchor)) {
+      continue;
+    }
+    const raw = (anchor.getAttribute("href") ?? "").trim();
+    if (raw === "" || raw.startsWith("#") || /^javascript:/i.test(raw)) {
+      continue;
+    }
+    const href = absoluteHref(doc, raw);
+    if (seen.has(href)) {
+      continue;
+    }
+    seen.add(href);
+
+    if (links.length >= limit) {
+      truncated = true;
+      break;
+    }
+
+    const text =
+      collapseWhitespace(anchor.textContent) ||
+      collapseWhitespace(anchor.getAttribute("aria-label")) ||
+      collapseWhitespace(anchor.getAttribute("title")) ||
+      collapseWhitespace(anchor.querySelector("img[alt]")?.getAttribute("alt")) ||
+      href;
+    links.push({ text, href });
+  }
+
+  return { links, truncated };
 }

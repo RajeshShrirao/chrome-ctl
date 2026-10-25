@@ -1,6 +1,8 @@
 import type {
   MacroTarget,
   PageResolveResult,
+  ReadLink,
+  ReadTable,
   SnapElement,
   ViewportInfo,
 } from "./protocol.js";
@@ -17,6 +19,8 @@ export interface ContentSnapRequest {
   type: "snap";
   all: boolean;
   formsOnly: boolean;
+  deep?: boolean;
+  maxElements?: number;
 }
 
 export interface ContentReadRequest {
@@ -24,18 +28,24 @@ export interface ContentReadRequest {
   type: "read";
   id?: number;
   selector?: string;
+  mode?: "markdown" | "tables" | "links";
+  maxTables?: number;
+  maxLinks?: number;
+  expectedDocId?: string;
 }
 
 export interface ContentTargetRequest {
   channel: typeof CONTENT_CHANNEL;
   type: "target";
   id: number;
+  expectedDocId?: string;
 }
 
 export interface ContentFocusRequest {
   channel: typeof CONTENT_CHANNEL;
   type: "focus";
   id: number;
+  expectedDocId?: string;
 }
 
 export interface ContentMetricsRequest {
@@ -48,10 +58,37 @@ export interface ContentStateRequest {
   type: "state";
 }
 
+/** Read back an element's current value/text; used to verify typing. */
+export interface ContentValueRequest {
+  channel: typeof CONTENT_CHANNEL;
+  type: "value";
+  id: number;
+  expectedDocId?: string;
+}
+
+/** Topmost element at a viewport point; used to report where a click landed. */
+export interface ContentPointRequest {
+  channel: typeof CONTENT_CHANNEL;
+  type: "point";
+  x: number;
+  y: number;
+}
+
+/** Attributes and identity for one element, by snapshot id or CSS selector. */
+export interface ContentAttrRequest {
+  channel: typeof CONTENT_CHANNEL;
+  type: "attr";
+  id?: number;
+  selector?: string;
+  expectedDocId?: string;
+}
+
 export interface ContentWaitRequest {
   channel: typeof CONTENT_CHANNEL;
   type: "wait";
   selector?: string;
+  text?: string;
+  ignoreCase?: boolean;
   idle?: boolean;
   timeoutMs?: number;
 }
@@ -61,6 +98,7 @@ export interface ContentDescribeRequest {
   channel: typeof CONTENT_CHANNEL;
   type: "describe";
   id: number;
+  expectedDocId?: string;
 }
 
 /** Resolve a resilient descriptor, polling until `timeoutMs` elapses. */
@@ -79,11 +117,17 @@ export type ContentRequest =
   | ContentFocusRequest
   | ContentMetricsRequest
   | ContentStateRequest
+  | ContentValueRequest
+  | ContentPointRequest
+  | ContentAttrRequest
   | ContentWaitRequest
   | ContentDescribeRequest
   | ContentResolveRequest;
 
 export interface SnapPayload {
+  docId: string;
+  snapshotId: number;
+  omitted: number;
   viewport: ViewportInfo;
   elements: SnapElement[];
   lines: string[];
@@ -95,6 +139,8 @@ export interface SnapPayload {
  */
 export interface ContentTargetPayload {
   id: number;
+  docId?: string;
+  snapshotId?: number;
   tag: string;
   type: string;
   label: string;
@@ -129,14 +175,56 @@ export interface ContentWaitPayload {
   matched: boolean;
 }
 
+export interface ContentValuePayload {
+  id: number;
+  docId?: string;
+  snapshotId?: number;
+  value: string;
+  length: number;
+  kind: "value" | "text";
+  editable: boolean;
+}
+
+export interface ContentPointPayload {
+  landedOn: string;
+}
+
+export interface ContentAttrPayload {
+  docId: string;
+  snapshotId: number;
+  tag: string;
+  role: string;
+  type: string;
+  label: string;
+  value: string;
+  state: string;
+  href: string;
+  src: string;
+  name: string;
+  elementId: string;
+  rect: { x: number; y: number; w: number; h: number };
+  attributes: Record<string, string>;
+  matches: number;
+}
+
 export type ContentResponse =
   | { ok: true; type: "ping" }
   | { ok: true; type: "snap"; snap: SnapPayload }
-  | { ok: true; type: "read"; markdown: string }
+  | {
+      ok: true;
+      type: "read";
+      markdown: string;
+      tables?: ReadTable[];
+      links?: ReadLink[];
+      truncated?: boolean;
+    }
   | { ok: true; type: "target"; target: ContentTargetPayload }
   | { ok: true; type: "focus" }
   | { ok: true; type: "metrics"; metrics: ContentMetricsPayload }
   | { ok: true; type: "state"; entries: ContentStateEntry[] }
+  | { ok: true; type: "value"; value: ContentValuePayload }
+  | { ok: true; type: "point"; point: ContentPointPayload }
+  | { ok: true; type: "attr"; attr: ContentAttrPayload }
   | { ok: true; type: "wait"; wait: ContentWaitPayload }
   | { ok: true; type: "describe"; target: MacroTarget }
   | { ok: true; type: "resolve"; resolved: PageResolveResult }

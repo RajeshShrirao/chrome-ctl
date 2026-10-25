@@ -106,31 +106,53 @@ To fulfill the requirements in [PRD.md](file:///Users/rajeshshrirao/Desktop/Chro
 │   └── chrome-ctl/
 │       └── main.go              # CLI entry point (Cobra commands)
 ├── internal/
-│   ├── cli/                     # CLI subcommand handlers (snap, shot, click, window, etc.)
-│   ├── daemon/                  # Background WebSocket server & connection manager
+│   ├── cli/                     # Cobra subcommands, one file per command
+│   │   ├── root.go              # Command registration
+│   │   ├── rpc.go               # JSON-RPC client & error-to-message mapping
+│   │   ├── snap.go read.go      # Observation (--deep/--max-elements, --tables/--links)
+│   │   ├── click.go clickat.go  # Element click & viewport CSS-pixel click
+│   │   ├── type.go press.go     # Typing with read-back verification, key presses
+│   │   ├── eval.go describe.go href.go url.go   # Escape hatch & cheap inspection
+│   │   ├── wait.go net.go       # Network/text waits, CDP request history
+│   │   ├── shot.go rec.go       # Screenshots (CDP fallback) & recordings
+│   │   └── bulk.go              # Many-page extraction with a manifest
+│   ├── daemon/                  # Background WebSocket server, connection manager, dispatch
 │   ├── protocol/                # Shared message types & serialization
 │   ├── media/                   # WebP compression, SoM badge drawing, WebM grid
 │   ├── humanizer/               # Bézier math, typing cadence, Gaussian offsets
 │   └── macro/                   # Playbook recorder, parameterizer, and replayer
 ├── extension/                   # Manifest V3 Chrome Extension
 │   ├── manifest.json            # MV3 configuration
-│   ├── package.json             # Extension build dependencies (esbuild/tsup)
+│   ├── package.json             # Extension build dependencies (esbuild)
 │   ├── tsconfig.json            # TypeScript configuration
+│   ├── build.mjs                # esbuild bundling → extension/dist (gitignored)
 │   ├── src/
-│   │   ├── background/          # Service worker (tab tracking, debugger controller)
-│   │   │   └── service_worker.ts
+│   │   ├── background/          # Service worker & privileged helpers
+│   │   │   ├── service_worker.ts  # RPC routing, snapshot-epoch cache, waits
+│   │   │   ├── actions.ts         # Click/type sequencing, read-back verification
+│   │   │   ├── capture.ts         # captureVisibleTab + CDP screenshot fallback
+│   │   │   ├── debugger.ts        # chrome.debugger attach/detach controller
+│   │   │   ├── netlog.ts          # CDP Network ring log & quiet tracker
+│   │   │   ├── resolver.ts        # Selector/id/semantic target resolution
+│   │   │   └── humanizer.ts sso.ts windows.ts faults.ts
 │   │   ├── offscreen/           # Offscreen document (persistent WS connection)
 │   │   │   ├── offscreen.html
 │   │   │   └── offscreen.ts
-│   │   ├── content/             # In-page DOM distillation & overlay badges
-│   │   │   ├── indexer.ts       # Viewport tree walking & ID generation
+│   │   ├── content/             # In-page DOM distillation & interaction
+│   │   │   ├── indexer.ts       # Request routing, global ID epoch, docId guard
+│   │   │   ├── dom.ts           # Candidate selection, labels, state tokens, rects
+│   │   │   ├── interact.ts      # Idle/text waits, focus, input helpers
+│   │   │   ├── read.ts          # Markdown, table, and link extraction
 │   │   │   └── forms.ts         # Fast form distillation (--forms)
 │   │   ├── popup/               # Extension popup (shows daemon status, token input)
 │   │   │   ├── popup.html
 │   │   │   └── popup.ts
-│   │   └── shared/              # Shared types with protocol
-│   │       └── messages.ts
+│   │   └── shared/              # Shared types with the Go protocol
+│   │       ├── protocol.ts      # RPC params/results (mirrors internal/protocol)
+│   │       └── content.ts       # Content-script IPC message shapes
+│   ├── tests/                   # node --test suites (content, epoch, netlog, read modes)
 │   └── icons/                   # Extension icons (16, 48, 128)
+├── testdata/                    # Local HTML fixtures (e.g. spa.html) for E2E runs
 └── tests/
     ├── fixtures/                # Local HTML mock pages (forms, dynamic lists, auth)
     └── e2e/                     # Go integration tests
@@ -154,7 +176,7 @@ To fulfill the requirements in [PRD.md](file:///Users/rajeshshrirao/Desktop/Chro
 6. Daemon receives response and prints compact stdout:
    ```text
    OK: Clicked [2] <button> "Start a post".
-   TAB [2] Feed | LinkedIn | https://www.linkedin.com/feed/
+   SNAP 3 | TAB [2] Feed | LinkedIn | https://www.linkedin.com/feed/
    VIEWPORT: 0-900px of 4200px (21%)
    [1] <input:text> "Search" () @310,28
    [2] <div:textbox> "What do you want to talk about?" @540,135
@@ -170,9 +192,10 @@ To achieve `<450 tokens` per snapshot:
    * Filter out elements obscured by modal backdrops or out of viewport (unless `--all` is passed).
 3. Deduplication & Hierarchy Flattening:
    * If a `<button>` contains a nested `<span>`, index the `<button>`, ignore the inner text span.
-4. Assign contiguous integer IDs: `[1]`, `[2]`, `[3]`, etc.
-5. Cache element references in `window.__chromeCtlIndex = new Map<number, Element>()`.
-6. Format output into single-line tokens:
+4. Assign **globally unique** integer IDs: the snapshot starts at the current `nextId` and advances it, so IDs are never reused within a document. (The earlier `1..n`-per-snap scheme aliased old IDs onto new elements — see `MV3_LIFECYCLE_SPEC.md` §4.1.)
+5. Merge element references into `window.__chromeCtlIndex = new Map<number, Element>()`, pruning `!isConnected` entries first.
+6. Emit `docId`, `snapshotId`, and `omitted` alongside the text. The service worker prefixes the formatted block with `SNAP <snapshotId> | `, rejects actions carrying a stale `expectedDocId`, and appends an `OMITTED: n candidates` footer when `--max-elements` culls anything.
+7. Format output into single-line tokens:
    `[ID] <TAG:type> "Label/Text" (value/state) @x,y`
 
 ### 4.3 Humanizer Engine Architecture

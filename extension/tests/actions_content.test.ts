@@ -337,3 +337,39 @@ test("idle wait can time out", async () => {
   assert.equal(result.matched, false);
   assert.ok(result.waitedMs >= 70);
 });
+
+test("text wait resolves immediately when the body already contains it", async () => {
+  const doc = makeDoc("<div>Panel ready</div>");
+  const result = await waitForContent(doc, { text: "Panel ready", timeoutMs: 500 });
+  assert.equal(result.matched, true);
+  assert.ok(result.waitedMs < 50);
+});
+
+test("text wait resolves when late content is rendered", async () => {
+  const doc = makeDoc("<div id='root'>Loading</div>");
+  const pending = waitForContent(doc, { text: "Results", timeoutMs: 1000 });
+
+  setTimeout(() => {
+    doc.body.textContent = "Results loaded";
+  }, 20);
+
+  const result = await pending;
+  assert.equal(result.matched, true);
+});
+
+test("text wait honors ignoreCase and times out otherwise", async () => {
+  const doc = makeDoc("<div>RELATED KEYWORDS</div>");
+
+  const sensitive = await waitForContent(doc, {
+    text: "related keywords",
+    timeoutMs: 30,
+  });
+  assert.equal(sensitive.matched, false);
+
+  const insensitive = await waitForContent(doc, {
+    text: "related keywords",
+    ignoreCase: true,
+    timeoutMs: 100,
+  });
+  assert.equal(insensitive.matched, true);
+});

@@ -12,6 +12,12 @@ export interface WindowLike {
 export interface SnapOptions {
   all?: boolean;
   formsOnly?: boolean;
+  /** Include cursor-pointer controls and bare rows/cells (opt-in: snapshot explosion). */
+  deep?: boolean;
+  /** Cap on emitted elements; defaults to MAX_SNAP_ELEMENTS. */
+  maxElements?: number;
+  /** First id to assign; lets the caller keep ids unique across snaps. */
+  startId?: number;
   /** Injectable hit-test (top-frame coordinates); tests use this instead of elementFromPoint. */
   hitTest?: (x: number, y: number) => Element | null;
 }
@@ -81,7 +87,13 @@ export interface Snapshot {
   elements: SnapElement[];
   lines: string[];
   byId: Map<number, Element>;
+  /** First id not used by this snapshot (monotonic across calls with startId). */
+  nextId: number;
+  /** Visible candidates dropped because the element cap was reached. */
+  omitted: number;
 }
+
+export const MAX_SNAP_ELEMENTS = 400;
 
 const CANDIDATE_SELECTOR = [
   "a[href]",
@@ -94,8 +106,40 @@ const CANDIDATE_SELECTOR = [
   '[role="checkbox"]',
   '[role="menuitem"]',
   '[role="tab"]',
+  '[role="combobox"]',
+  '[role="listbox"]',
+  '[role="option"]',
+  '[role="menu"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
+  '[role="switch"]',
+  '[role="slider"]',
+  '[role="searchbox"]',
+  '[role="radio"]',
+  '[role="treeitem"]',
+  '[role="spinbutton"]',
+  '[role="row"][aria-selected]',
+  '[role="gridcell"][aria-selected]',
+  '[role="gridcell"][tabindex]',
+  '[tabindex]:not([tabindex="-1"])',
+  "[aria-expanded]",
+  "[aria-haspopup]",
+  "summary",
+  "[onclick]",
   '[contenteditable="true"]',
 ].join(",");
+
+/** Bare structural rows/cells are opt-in: on data grids they explode the snapshot. */
+const DEEP_CANDIDATE_SELECTOR = ['[role="row"]', '[role="gridcell"]'].join(",");
+
+const NON_POINTER_CONTAINERS = new Set([
+  "html",
+  "body",
+  "main",
+  "section",
+  "article",
+  "nav",
+]);
 
 const VIEWPORT_MARGIN_PX = 100;
 const MIN_RECT_PX = 4;
@@ -248,7 +292,7 @@ function valueFor(el: Element): string {
   return collapseWhitespace(value).slice(0, VALUE_MAX_CHARS);
 }
 
-function stateTokens(el: Element): string[] {
+export function stateTokens(el: Element): string[] {
   const tokens: string[] = [];
   const element = el as HTMLElement & {
     checked?: boolean;
@@ -278,6 +322,22 @@ function stateTokens(el: Element): string[] {
 
   if (el.getAttribute("aria-selected") === "true" || (tag === "option" && element.selected === true)) {
     tokens.push("selected");
+  }
+
+  const expanded = el.getAttribute("aria-expanded");
+  if (expanded === "true") {
+    tokens.push("expanded");
+  } else if (expanded === "false") {
+    tokens.push("collapsed");
+  } else if (tag === "summary") {
+    const parent = el.parentElement;
+    if (parent !== null && parent.tagName.toLowerCase() === "details") {
+      tokens.push((parent as HTMLDetailsElement).open === true ? "expanded" : "collapsed");
+    }
+  }
+
+  if (tag === "input" && effectiveInputType(el) === "file") {
+    tokens.push("file");
   }
 
   return tokens;
@@ -315,14 +375,14 @@ export function formatLine(element: SnapElement, alwaysParens: boolean): string 
   return `[${element.id}] <${tagToken}> "${escapedLabel}"${parens} @${element.x},${element.y}`;
 }
 
-function describeElement(el: Element, id: number): SnapElement {
-  const rect = viewportRect(el);
-  const ownerDoc = el.ownerDocument;
+function describeElement(el: Element, id: number, geometry: Element = el): SnapElement {
+  const rect = viewportRect(geometry);
+  const ownerDoc = geometry.ownerDocument ?? el.ownerDocument;
   return {
     id,
     tag: el.tagName.toLowerCase(),
     type: typeToken(el),
-    label: truncateText(labelFor(el, ownerDoc), LABEL_MAX_CHARS),
+    label: truncateText(labelFor(geometry === el ? el : geometry, ownerDoc), LABEL_MAX_CHARS),
     value: valueFor(el),
     state: stateTokens(el).join(", "),
     x: Math.round(rect.left),
@@ -379,6 +439,7 @@ function collectCandidates(
   out: Element[],
   seen: Set<Element>,
   depth = 0,
+  deep = false,
 ): void {
   if (depth > 64) {
     return;
@@ -387,19 +448,65 @@ function collectCandidates(
     if (seen.has(el)) {
       continue;
     }
-    if (el.matches(CANDIDATE_SELECTOR) && isCandidate(el)) {
+    if (matchesCandidate(el, deep)) {
       seen.add(el);
       out.push(el);
     }
     const shadow = shadowRootOf(el);
     if (shadow) {
-      collectCandidates(shadow, out, seen, depth + 1);
+      collectCandidates(shadow, out, seen, depth + 1, deep);
     }
     const frameDoc = frameDocumentOf(el);
     if (frameDoc && isFrameVisible(el)) {
-      collectCandidates(frameDoc, out, seen, depth + 1);
+      collectCandidates(frameDoc, out, seen, depth + 1, deep);
     }
   }
+}
+
+/** Opt-in heuristic for div-based controls: deepest element with cursor:pointer. */
+function isPointerCandidate(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (NON_POINTER_CONTAINERS.has(tag)) {
+    return false;
+  }
+  const style = computedStyle(el.ownerDocument, el);
+  if (style === null || style.cursor !== "pointer") {
+    return false;
+  }
+  const parent = el.parentElement;
+  if (parent !== null) {
+    const parentStyle = computedStyle(parent.ownerDocument, parent);
+    if (parentStyle !== null && parentStyle.cursor === "pointer") {
+      return false;
+    }
+  }
+  if (el.children.length > 6) {
+    return false;
+  }
+  const text = collapseWhitespace(el.textContent).length;
+  if (text > 160) {
+    const label = collapseWhitespace(labelFor(el, el.ownerDocument));
+    if (label === "") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function matchesCandidate(el: Element, deep: boolean): boolean {
+  if (!isCandidate(el)) {
+    return false;
+  }
+  if (el.matches(CANDIDATE_SELECTOR)) {
+    return true;
+  }
+  if (!deep) {
+    return false;
+  }
+  if (el.matches(DEEP_CANDIDATE_SELECTOR)) {
+    return true;
+  }
+  return isPointerCandidate(el);
 }
 
 /** Composed parent that stops at iframe document boundaries (for flattening). */
@@ -620,6 +727,48 @@ function isCandidate(el: Element): boolean {
   return true;
 }
 
+function isFileInput(el: Element): boolean {
+  return el.tagName.toLowerCase() === "input" && effectiveInputType(el) === "file";
+}
+
+function isRendered(el: Element): boolean {
+  const style = computedStyle(el.ownerDocument, el);
+  if (
+    style &&
+    (style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse")
+  ) {
+    return false;
+  }
+  const rect = el.getBoundingClientRect();
+  return rect.width >= MIN_RECT_PX && rect.height >= MIN_RECT_PX;
+}
+
+/**
+ * A visually hidden file input is unreachable by clicking, so emit it at its
+ * associated visible label's rect instead. Clicking that label opens the picker.
+ */
+function fileInputGeometry(el: Element): Element {
+  if (!isFileInput(el) || isRendered(el)) {
+    return el;
+  }
+  const id = el.getAttribute("id");
+  if (id !== null && id !== "") {
+    const labelled = Array.from(el.ownerDocument.querySelectorAll("label[for]")).find(
+      (label) => label.getAttribute("for") === id,
+    );
+    if (labelled !== undefined && isRendered(labelled)) {
+      return labelled;
+    }
+  }
+  const wrapping = el.closest("label");
+  if (wrapping !== null && isRendered(wrapping)) {
+    return wrapping;
+  }
+  return el;
+}
+
 function resolveWindow(doc: Document): WindowLike {
   const view = doc.defaultView;
   return {
@@ -645,10 +794,31 @@ export function computeViewport(doc: Document, win?: WindowLike): ViewportInfo {
   return { scrollY, viewportHeight, totalHeight, percent };
 }
 
+/**
+ * Overlay containers index their children individually: a listbox must not
+ * hide its options, a menu its items. Flattening still applies to leaf-like
+ * controls such as a button wrapping a span.
+ */
+const CHILD_ADDRESSABLE_ROLES = new Set([
+  "listbox",
+  "menu",
+  "menubar",
+  "tree",
+  "tablist",
+  "grid",
+  "radiogroup",
+  "toolbar",
+]);
+
+function suppressesDescendants(el: Element): boolean {
+  const role = el.getAttribute("role");
+  return role === null || !CHILD_ADDRESSABLE_ROLES.has(role);
+}
+
 function hasEmittedAncestor(el: Element, emitted: Set<Element>): boolean {
   let parent = composedParentElement(el);
   for (let depth = 0; parent !== null && depth < 512; depth += 1) {
-    if (emitted.has(parent)) {
+    if (emitted.has(parent) && suppressesDescendants(parent)) {
       return true;
     }
     parent = composedParentElement(parent);
@@ -664,9 +834,17 @@ export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowL
   const windowLike = win ?? resolveWindow(doc);
   const all = options.all === true;
   const formsOnly = options.formsOnly === true;
+  const maxElements =
+    typeof options.maxElements === "number" && Number.isFinite(options.maxElements) && options.maxElements > 0
+      ? Math.floor(options.maxElements)
+      : MAX_SNAP_ELEMENTS;
+  let nextId =
+    typeof options.startId === "number" && Number.isFinite(options.startId)
+      ? Math.max(1, Math.floor(options.startId))
+      : 1;
 
   const candidates: Element[] = [];
-  collectCandidates(doc, candidates, new Set<Element>());
+  collectCandidates(doc, candidates, new Set<Element>(), 0, options.deep === true);
 
   const modal = findVisibleModal(doc);
   const hitTest =
@@ -679,6 +857,7 @@ export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowL
   const lines: string[] = [];
   const byId = new Map<number, Element>();
   const emitted = new Set<Element>();
+  let omitted = 0;
 
   for (const el of candidates) {
     if (!isCandidate(el)) {
@@ -691,17 +870,23 @@ export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowL
     if (hasEmittedAncestor(el, emitted)) {
       continue;
     }
-    if (isCulled(doc, el, windowLike, all, modal, hitTest)) {
+    const geometry = fileInputGeometry(el);
+    if (isCulled(doc, geometry, windowLike, all, modal, hitTest)) {
+      continue;
+    }
+    if (elements.length >= maxElements) {
+      omitted += 1;
       continue;
     }
 
-    const id = elements.length + 1;
-    const described = describeElement(el, id);
+    const id = nextId;
+    nextId += 1;
+    const described = describeElement(el, id, geometry);
     elements.push(described);
     emitted.add(el);
     byId.set(id, el);
     lines.push(formatLine(described, isEmittedFormField(el)));
   }
 
-  return { viewport: computeViewport(doc, windowLike), elements, lines, byId };
+  return { viewport: computeViewport(doc, windowLike), elements, lines, byId, nextId, omitted };
 }

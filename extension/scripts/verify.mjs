@@ -68,6 +68,21 @@ check(
   `action.default_popup must reference an existing dist file (got ${String(popup)})`,
 );
 
+const ICON_SIZES = ["16", "32", "48", "128"];
+const toolbarIcons = manifest.action?.default_icon ?? {};
+for (const size of ICON_SIZES) {
+  const icon = manifest.icons?.[size];
+  check(
+    typeof icon === "string" && (await fileExists(path.join(dist, icon))),
+    `icons.${size} must reference an existing dist file (got ${String(icon)})`,
+  );
+  const toolbarIcon = toolbarIcons[size];
+  check(
+    typeof toolbarIcon === "string" && (await fileExists(path.join(dist, toolbarIcon))),
+    `action.default_icon.${size} must reference an existing dist file (got ${String(toolbarIcon)})`,
+  );
+}
+
 const contentScripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];
 const indexerScript = contentScripts[0];
 check(

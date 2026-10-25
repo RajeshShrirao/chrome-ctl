@@ -13,6 +13,7 @@ import type {
   ContentResponse,
   ContentStateEntry,
   ContentTargetPayload,
+  ContentValuePayload,
 } from "../shared/content.js";
 import { ErrorCodes } from "../shared/protocol.js";
 import type {
@@ -24,6 +25,7 @@ import type {
 } from "../shared/protocol.js";
 import * as debuggerController from "./debugger.js";
 import { RpcFault, errorText } from "./faults.js";
+import { classifyReadBack, type Verification } from "./verify.js";
 import {
   clickLanding,
   keyDefinition,
@@ -47,6 +49,11 @@ export interface ClickOptions {
   sendContent: ContentSender;
 }
 
+export interface ClickAtOptions {
+  doubleClick?: boolean;
+  sendContent: ContentSender;
+}
+
 export interface TypeOptions {
   enter?: boolean;
   typoRate?: number;
@@ -66,6 +73,7 @@ export interface UploadOptions {
 
 const MAX_TEXT_CHARS = 5000;
 const DEFAULT_TYPO_RATE = 0.02;
+const READBACK_RETRY_MS = [0, 120, 300];
 
 interface Pointer {
   x: number;
@@ -115,6 +123,86 @@ async function requestTarget(
     throw unexpectedResponse();
   }
   return response.target;
+}
+
+async function requestPointLabel(
+  sendContent: ContentSender,
+  tabId: number,
+  x: number,
+  y: number,
+): Promise<string> {
+  try {
+    const response = await sendContent(tabId, {
+      channel: CONTENT_CHANNEL,
+      type: "point",
+      x,
+      y,
+    });
+    if (!response.ok || response.type !== "point") {
+      return "";
+    }
+    return response.point.landedOn;
+  } catch {
+    return "";
+  }
+}
+
+async function requestValue(
+  sendContent: ContentSender,
+  tabId: number,
+  id: number,
+): Promise<ContentValuePayload | null> {
+  try {
+    const response = await sendContent(tabId, {
+      channel: CONTENT_CHANNEL,
+      type: "value",
+      id,
+    });
+    if (!response.ok || response.type !== "value") {
+      return null;
+    }
+    return response.value;
+  } catch {
+    return null;
+  }
+}
+
+interface ReadBackResult {
+  verified: boolean;
+  verification: Verification | "";
+  readBack: string;
+}
+
+/** Poll briefly: controlled inputs often commit a tick after the last key. */
+async function verifyTypedText(
+  sendContent: ContentSender,
+  tabId: number,
+  id: number,
+  expected: string,
+): Promise<ReadBackResult> {
+  let readBack = "";
+  let verification: Verification | "" = "";
+
+  for (const delay of READBACK_RETRY_MS) {
+    if (delay > 0) {
+      await sleep(delay);
+    }
+    const value = await requestValue(sendContent, tabId, id);
+    if (value === null) {
+      return { verified: false, verification: "", readBack: "" };
+    }
+    readBack = value.value;
+    verification = classifyReadBack(expected, readBack);
+    if (verification === "exact" || verification === "normalized") {
+      break;
+    }
+  }
+
+  return {
+    verified: verification === "exact" || verification === "normalized",
+    verification,
+    readBack,
+  };
 }
 
 async function requestMetrics(
@@ -259,6 +347,10 @@ export async function click(
     const x = Math.round(landing.x);
     const y = Math.round(landing.y);
 
+    // Probe before pressing: a click that closes a menu or opens a modal
+    // reflows the page, so a post-click probe can name a different element.
+    const landedOn = await requestPointLabel(options.sendContent, tabId, x, y);
+
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
@@ -293,6 +385,63 @@ export async function click(
       action: "click",
       target: { id, tag: target.tag, label: target.label },
       coordinates: { x, y },
+      landedOn,
+      durationMs: Date.now() - startedAt,
+    };
+  });
+}
+
+/** Click exact viewport CSS pixels, with no landing jitter. */
+export async function clickAt(
+  tabId: number,
+  x: number,
+  y: number,
+  options: ClickAtOptions,
+): Promise<ActionClickResult> {
+  return run(async () => {
+    const startedAt = Date.now();
+
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mouseMoved", x, y),
+    );
+    await sleep(randomInt(30, 80));
+    const landedOn = await requestPointLabel(options.sendContent, tabId, x, y);
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 1 }),
+    );
+    await sleep(randomInt(45, 95));
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mouseReleased", x, y, { button: "left", clickCount: 1 }),
+    );
+
+    if (options.doubleClick === true) {
+      await sleep(randomInt(70, 140));
+      await debuggerController.send(
+        tabId,
+        "Input.dispatchMouseEvent",
+        mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 2 }),
+      );
+      await sleep(randomInt(45, 95));
+      await debuggerController.send(
+        tabId,
+        "Input.dispatchMouseEvent",
+        mouseEventParams("mouseReleased", x, y, { button: "left", clickCount: 2 }),
+      );
+    }
+
+    lastPointer.set(tabId, { x, y });
+
+    return {
+      success: true,
+      action: "clickAt",
+      coordinates: { x, y },
+      landedOn,
       durationMs: Date.now() - startedAt,
     };
   });
@@ -385,6 +534,9 @@ export async function typeText(
       await sleep(step.delayMs);
     }
 
+    // Read back before Enter: submitting may navigate away from the field.
+    const readBack = await verifyTypedText(options.sendContent, tabId, id, text);
+
     if (options.enter === true) {
       await pressKey(tabId, keyDefinition("Enter"), 0);
     }
@@ -397,6 +549,9 @@ export async function typeText(
       durationMs: Date.now() - startedAt,
       typosInjected: plan.typosInjected,
       stateDelta: stateDelta(before, after),
+      verified: readBack.verified,
+      verification: readBack.verification,
+      readBack: readBack.readBack,
     };
   });
 }

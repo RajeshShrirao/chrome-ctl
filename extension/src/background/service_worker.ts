@@ -3,6 +3,7 @@ import type {
   ContentReadRequest,
   ContentRequest,
   ContentResponse,
+  ContentSnapRequest,
 } from "../shared/content.js";
 import { ErrorCodes, Methods, TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
 import type {
@@ -12,8 +13,11 @@ import type {
   ActionTypeResult,
   ActionUploadResult,
   ExtensionStatusResult,
+  EvalResult,
   MediaCaptureResult,
+  PageNetResult,
   PageReadResult,
+  PageAttrResult,
   PageWaitResult,
   RpcRequest,
   RpcResponse,
@@ -33,12 +37,15 @@ import type { RuntimeMessage, TokenReply } from "../shared/messages.js";
 import {
   RpcFault,
   click,
+  clickAt,
   press,
   scroll,
   typeText,
   upload,
 } from "./actions.js";
 import { describeCaptureError, stripPngDataUrl } from "./capture.js";
+import * as debuggerController from "./debugger.js";
+import { forgetTab, isNetworkEnabled, noteNavigation, snapshot as netSnapshot, waitForQuiet } from "./netlog.js";
 import { handlePageDescribe, handlePageResolve } from "./resolver.js";
 import type { ResolverDeps } from "./resolver.js";
 import { sso } from "./sso.js";
@@ -108,11 +115,10 @@ async function isDebuggerAttached(tabId: number | undefined): Promise<boolean> {
 }
 
 async function buildStatus(): Promise<ExtensionStatusResult> {
-  const [tabs, focusedTabs] = await Promise.all([
-    chrome.tabs.query({}),
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }),
-  ]);
-  const active = focusedTabs[0];
+  const tabs = await chrome.tabs.query({});
+  // Report the tab actions would target: the automation window when one is
+  // active, otherwise the user's focused tab.
+  const active = (await automationActiveTab()) ?? (await lastFocusedActiveTab());
 
   return {
     tabCount: tabs.length,
@@ -221,6 +227,65 @@ function restrictedProtocol(url: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** Snapshot identity last emitted for a tab; replaced by the next snap. */
+interface SnapIdentity {
+  docId: string;
+  snapshotId: number;
+}
+
+const lastSnap = new Map<number, SnapIdentity>();
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading" || changeInfo.url !== undefined) {
+    // Keep the identity on purpose: ids from the previous document must fail as
+    // stale (`-32010`) until a new snap installs the current docId. Clearing it
+    // here would let a renumbered id silently resolve against a new element.
+    noteNavigation(tabId);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  lastSnap.delete(tabId);
+  forgetTab(tabId);
+});
+
+function requestUsesSnapshotId(request: ContentRequest): boolean {
+  switch (request.type) {
+    case "target":
+    case "focus":
+    case "describe":
+    case "value":
+      return true;
+    case "read":
+      return typeof request.id === "number";
+    case "attr":
+      return typeof request.id === "number";
+    default:
+      return false;
+  }
+}
+
+/**
+ * Attach the document identity observed at snap time. The content script
+ * rejects the request when the page has navigated since, instead of silently
+ * resolving an old id against a different element.
+ */
+function sendWithIdentity(
+  tabId: number,
+  request: ContentRequest,
+  timeoutMs?: number,
+): Promise<ContentResponse> {
+  const identity = lastSnap.get(tabId);
+  if (identity === undefined || !requestUsesSnapshotId(request)) {
+    return sendToContent(tabId, request, timeoutMs);
+  }
+  return sendToContent(
+    tabId,
+    { ...request, expectedDocId: identity.docId } as ContentRequest,
+    timeoutMs,
+  );
 }
 
 /** Promise wrapper around tabs.sendMessage with a hard timeout and lastError surfacing. */
@@ -598,6 +663,28 @@ async function handleWindowClose(
 interface SnapRequestOptions {
   all?: boolean;
   formsOnly?: boolean;
+  deep?: boolean;
+  maxElements?: number;
+}
+
+const SNAP_SETTLE_MS = 2_500;
+const URL_PROBE_MS = 150;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Let a layout-changing action commit before snapshotting (best effort). */
+async function settleBeforeSnap(tabId: number): Promise<void> {
+  try {
+    await sendToContent(
+      tabId,
+      { channel: CONTENT_CHANNEL, type: "wait", idle: true, timeoutMs: SNAP_SETTLE_MS },
+      SNAP_SETTLE_MS + 2_000,
+    );
+  } catch {
+    // The snapshot itself will surface any real content-script failure.
+  }
 }
 
 /** Build a snapshot result (content injection included) for snap/--snap responses. */
@@ -608,12 +695,19 @@ async function buildSnapResult(
   const tabId = tabIdOf(tab);
 
   await ensureContentScriptInjected(tabId);
-  const response = await sendToContent(tabId, {
+  const request: ContentSnapRequest = {
     channel: CONTENT_CHANNEL,
     type: "snap",
     all: options.all === true,
     formsOnly: options.formsOnly === true,
-  });
+  };
+  if (options.deep === true) {
+    request.deep = true;
+  }
+  if (typeof options.maxElements === "number" && Number.isFinite(options.maxElements)) {
+    request.maxElements = Math.max(1, Math.round(options.maxElements));
+  }
+  const response = await sendToContent(tabId, request);
 
   if (!response.ok) {
     throw new Error(response.error);
@@ -629,17 +723,25 @@ async function buildSnapResult(
     // The tab vanished or navigated mid-snap; fall back to the resolved tab.
   }
 
-  const { viewport, elements, lines } = response.snap;
+  const { docId, snapshotId, omitted, viewport, elements, lines } = response.snap;
   const formattedText = [
-    `TAB [${tabId}] ${current.title ?? ""} | ${current.url ?? ""}`,
+    `SNAP ${snapshotId} | TAB [${tabId}] ${current.title ?? ""} | ${current.url ?? ""}`,
     `VIEWPORT: ${viewport.scrollY}-${viewport.scrollY + viewport.viewportHeight}px of ${viewport.totalHeight}px (${viewport.percent}%)`,
     ...lines,
+    ...(omitted > 0
+      ? [`OMITTED: ${omitted} candidates (use snap --deep / --max-elements to see more)`]
+      : []),
   ].join("\n");
+
+  lastSnap.set(tabId, { docId, snapshotId });
 
   return {
     tabId,
     title: current.title ?? "",
     url: current.url ?? "",
+    docId,
+    snapshotId,
+    omitted,
     viewport,
     elements,
     formattedText,
@@ -650,10 +752,15 @@ async function handlePageSnap(params: Record<string, unknown>): Promise<SnapResu
   const requestedTabId = typeof params.tabId === "number" ? params.tabId : undefined;
   const tab = await resolveTab(requestedTabId);
 
-  return buildSnapResult(tab, {
+  const options: SnapRequestOptions = {
     all: params.all === true,
     formsOnly: params.formsOnly === true,
-  });
+    deep: params.deep === true,
+  };
+  if (typeof params.maxElements === "number" && Number.isFinite(params.maxElements)) {
+    options.maxElements = params.maxElements;
+  }
+  return buildSnapResult(tab, options);
 }
 
 async function handlePageRead(params: Record<string, unknown>): Promise<PageReadResult> {
@@ -670,8 +777,17 @@ async function handlePageRead(params: Record<string, unknown>): Promise<PageRead
   if (typeof params.selector === "string") {
     request.selector = params.selector;
   }
+  if (params.mode === "tables" || params.mode === "links") {
+    request.mode = params.mode;
+  }
+  if (typeof params.maxTables === "number" && params.maxTables > 0) {
+    request.maxTables = Math.round(params.maxTables);
+  }
+  if (typeof params.maxLinks === "number" && params.maxLinks > 0) {
+    request.maxLinks = Math.round(params.maxLinks);
+  }
 
-  const response = await sendToContent(tabId, request);
+  const response = await sendWithIdentity(tabId, request);
   if (!response.ok) {
     throw new Error(response.error);
   }
@@ -679,7 +795,38 @@ async function handlePageRead(params: Record<string, unknown>): Promise<PageRead
     throw new Error("unexpected content script response");
   }
 
-  return { markdown: response.markdown };
+  return {
+    markdown: response.markdown,
+    tables: response.tables,
+    links: response.links,
+    truncated: response.truncated,
+  };
+}
+
+async function handlePageAttr(params: Record<string, unknown>): Promise<PageAttrResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+
+  const request: ContentRequest = { channel: CONTENT_CHANNEL, type: "attr" };
+  if (typeof params.id === "number") {
+    request.id = params.id;
+  }
+  if (typeof params.selector === "string" && params.selector !== "") {
+    request.selector = params.selector;
+  }
+  if (request.id === undefined && request.selector === undefined) {
+    throw new RpcFault(ErrorCodes.internal, "id or selector is required");
+  }
+
+  await ensureContentScriptInjected(tabId);
+  const response = await sendWithIdentity(tabId, request);
+  if (!response.ok) {
+    throw new RpcFault(ErrorCodes.elementNotFound, response.error);
+  }
+  if (response.type !== "attr") {
+    throw new RpcFault(ErrorCodes.internal, "unexpected content script response");
+  }
+  return response.attr;
 }
 
 /** Resolve the action tab, mapping lookup failures to TAB_NOT_FOUND. */
@@ -713,29 +860,36 @@ function requireStringParam(params: Record<string, unknown>, name: string): stri
   return value;
 }
 
-async function handlePageWait(params: Record<string, unknown>): Promise<PageWaitResult> {
-  const tab = await resolveActionTab(params);
-  const tabId = tabIdOf(tab);
+function parseCoordinates(value: unknown): { x: number; y: number } | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const at = value as { x?: unknown; y?: unknown };
+  if (
+    typeof at.x !== "number" ||
+    !Number.isFinite(at.x) ||
+    typeof at.y !== "number" ||
+    !Number.isFinite(at.y) ||
+    at.x < 0 ||
+    at.y < 0
+  ) {
+    throw new RpcFault(ErrorCodes.internal, "at must contain non-negative x and y in CSS pixels");
+  }
+  return { x: Math.round(at.x), y: Math.round(at.y) };
+}
 
+function clampWaitTimeout(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(1, Math.min(30_000, Math.round(value)))
+    : 10_000;
+}
+
+async function contentWait(
+  tabId: number,
+  request: ContentRequest,
+  timeoutMs: number,
+): Promise<{ matched: boolean; waitedMs: number }> {
   await ensureContentScriptInjected(tabId);
-
-  const timeoutMs =
-    typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
-      ? Math.max(1, Math.min(30_000, Math.round(params.timeoutMs)))
-      : 10_000;
-
-  const request: ContentRequest = {
-    channel: CONTENT_CHANNEL,
-    type: "wait",
-    timeoutMs,
-  };
-  if (typeof params.selector === "string") {
-    request.selector = params.selector;
-  }
-  if (params.idle === true) {
-    request.idle = true;
-  }
-
   const response = await sendToContent(
     tabId,
     request,
@@ -747,8 +901,119 @@ async function handlePageWait(params: Record<string, unknown>): Promise<PageWait
   if (response.type !== "wait") {
     throw new RpcFault(ErrorCodes.internal, "unexpected content script response");
   }
-
   return response.wait;
+}
+
+interface WaitOutcome {
+  matched: boolean;
+  waitedMs: number;
+  inflight?: number;
+  requests?: number;
+}
+
+async function handlePageWait(params: Record<string, unknown>): Promise<PageWaitResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const timeoutMs = clampWaitTimeout(params.timeoutMs);
+  const text =
+    typeof params.text === "string" && params.text !== "" ? params.text : undefined;
+  const network = params.network === true;
+  const quietMs =
+    typeof params.quietMs === "number" && Number.isFinite(params.quietMs)
+      ? Math.max(50, Math.min(10_000, Math.round(params.quietMs)))
+      : 500;
+
+  if (!network && text === undefined) {
+    const request: ContentRequest = {
+      channel: CONTENT_CHANNEL,
+      type: "wait",
+      timeoutMs,
+    };
+    if (typeof params.selector === "string") {
+      request.selector = params.selector;
+    }
+    if (params.idle === true) {
+      request.idle = true;
+    }
+    return contentWait(tabId, request, timeoutMs);
+  }
+
+  const waits: Promise<WaitOutcome>[] = [];
+
+  if (network) {
+    // Network events only exist while the debugger is attached, so this wait
+    // opens the session itself instead of silently observing nothing.
+    await debuggerController.ensureAttached(tabId);
+    if (!isNetworkEnabled(tabId)) {
+      throw new RpcFault(
+        ErrorCodes.debuggerDetached,
+        "network events unavailable on this tab: the debugger could not enable CDP Network (DevTools may be open)",
+      );
+    }
+    waits.push(waitForQuiet(tabId, timeoutMs, quietMs));
+  }
+
+  if (text !== undefined) {
+    const request: ContentRequest = {
+      channel: CONTENT_CHANNEL,
+      type: "wait",
+      text,
+      ignoreCase: params.ignoreCase === true,
+      timeoutMs,
+    };
+    waits.push(contentWait(tabId, request, timeoutMs));
+  }
+
+  const outcomes = await Promise.all(waits);
+  const matched = outcomes.every((outcome) => outcome.matched);
+  const networkOutcome = network ? outcomes[0] : undefined;
+  return {
+    waitedMs: Math.max(...outcomes.map((outcome) => outcome.waitedMs)),
+    matched,
+    reason: matched ? undefined : "timeout",
+    inflight: networkOutcome?.inflight,
+    requests: networkOutcome?.requests,
+  };
+}
+
+async function handlePageNet(params: Record<string, unknown>): Promise<PageNetResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const snap = await netSnapshot(tabId);
+
+  const sinceMs =
+    typeof params.sinceMs === "number" && params.sinceMs > 0
+      ? Math.round(params.sinceMs)
+      : 0;
+  const limit =
+    typeof params.limit === "number" && params.limit > 0
+      ? Math.min(1000, Math.round(params.limit))
+      : 100;
+  const cutoff = sinceMs > 0 ? Date.now() - sinceMs : 0;
+
+  let entries = snap.entries;
+  if (cutoff > 0) {
+    entries = entries.filter((entry) => (entry.startedAt ?? 0) >= cutoff);
+  }
+  if (params.errorsOnly === true) {
+    entries = entries.filter(
+      (entry) =>
+        typeof entry.error === "string" ||
+        (typeof entry.status === "number" && entry.status >= 400),
+    );
+  }
+  if (entries.length > limit) {
+    entries = entries.slice(-limit);
+  }
+
+  return {
+    entries,
+    enabledAt: snap.enabledAt > 0 ? snap.enabledAt : undefined,
+    note:
+      snap.enabledAt === 0
+        ? "no network data yet: the log is collected only while the debugger is attached; run an action or wait --network first"
+        : snap.note,
+  };
 }
 
 async function handleActionClick(
@@ -756,16 +1021,45 @@ async function handleActionClick(
 ): Promise<ActionClickResult> {
   const tab = await resolveActionTab(params);
   const tabId = tabIdOf(tab);
-  const id = requireNumberParam(params, "id");
+  const at = parseCoordinates(params.at);
+  const hasId = typeof params.id === "number" && Number.isFinite(params.id) && params.id > 0;
+  const id = hasId ? (params.id as number) : 0;
+
+  if (at !== null && hasId) {
+    throw new RpcFault(ErrorCodes.internal, "provide either id or at, not both");
+  }
+  if (at === null && !hasId) {
+    throw new RpcFault(ErrorCodes.internal, "id or at is required");
+  }
 
   await ensureContentScriptInjected(tabId);
 
-  const result = await click(tabId, id, {
-    doubleClick: params.doubleClick === true,
-    sendContent: sendToContent,
-  });
+  const result =
+    at === null
+      ? await click(tabId, id, {
+          doubleClick: params.doubleClick === true,
+          sendContent: sendWithIdentity,
+        })
+      : await clickAt(tabId, at.x, at.y, {
+          doubleClick: params.doubleClick === true,
+          sendContent: sendWithIdentity,
+        });
+
+  // Report a navigation caused by the click, but never turn a successful
+  // dispatch into an error if the probe itself fails.
+  const initialURL = tab.url ?? "";
+  if (initialURL !== "") {
+    await delay(URL_PROBE_MS);
+    try {
+      const current = await chrome.tabs.get(tabId);
+      result.urlChanged = (current.url ?? "") !== initialURL;
+    } catch {
+      result.urlChanged = false;
+    }
+  }
 
   if (params.snap === true) {
+    await settleBeforeSnap(tabId);
     result.snapshot = await buildSnapResult(tab);
   }
   return result;
@@ -784,10 +1078,11 @@ async function handleActionType(
   const result = await typeText(tabId, id, text, {
     enter: params.enter === true,
     typoRate: typeof params.typoRate === "number" ? params.typoRate : undefined,
-    sendContent: sendToContent,
+    sendContent: sendWithIdentity,
   });
 
   if (params.snap === true) {
+    await settleBeforeSnap(tabId);
     result.snapshot = await buildSnapResult(tab);
   }
   return result;
@@ -822,7 +1117,7 @@ async function handleActionScroll(
   return scroll(tabId, {
     direction: params.direction,
     amount,
-    sendContent: sendToContent,
+    sendContent: sendWithIdentity,
   });
 }
 
@@ -836,7 +1131,7 @@ async function handleActionUpload(
 
   await ensureContentScriptInjected(tabId);
 
-  return upload(tabId, id, { filePath, sendContent: sendToContent });
+  return upload(tabId, id, { filePath, sendContent: sendWithIdentity });
 }
 
 /**
@@ -902,16 +1197,41 @@ async function handleMediaCapture(
     throw new RpcFault(ErrorCodes.internal, `tab ${tabId} is not attached to a window`);
   }
 
-  let dataUrl: string;
+  let pngBase64: string;
+  let capturePath: "captureVisibleTab" | "cdp" = "captureVisibleTab";
   try {
-    dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-  } catch (error) {
-    throw new RpcFault(ErrorCodes.internal, describeCaptureError(error));
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+    pngBase64 = stripPngDataUrl(dataUrl);
+  } catch (visibleError) {
+    // captureVisibleTab can fail for minimized windows, tiled surfaces, or
+    // transient rate limits; the debugger session captures the same viewport.
+    try {
+      const shot = await debuggerController.send<{ data?: string }>(
+        tabId,
+        "Page.captureScreenshot",
+        { format: "png", captureBeyondViewport: false },
+      );
+      const raw = shot?.data;
+      if (typeof raw !== "string" || raw.trim() === "") {
+        throw new Error("CDP capture returned an empty payload");
+      }
+      pngBase64 = stripPngDataUrl(
+        raw.trim().startsWith("data:") ? raw : `data:image/png;base64,${raw.trim()}`,
+      );
+      capturePath = "cdp";
+    } catch (fallbackError) {
+      throw new RpcFault(
+        ErrorCodes.internal,
+        `capture failed — captureVisibleTab: ${describeCaptureError(visibleError)}; CDP fallback: ${describeError(fallbackError)}. ` +
+          "Likely causes: the tab is not visible, DevTools or another debugger is attached, or the page is restricted.",
+      );
+    }
   }
 
   const result: MediaCaptureResult = {
     tabId,
-    pngBase64: stripPngDataUrl(dataUrl),
+    pngBase64,
+    capturePath,
     viewportWidth: metricsResponse.metrics.viewportWidth,
     viewportHeight: metricsResponse.metrics.viewportHeight,
   };
@@ -921,11 +1241,114 @@ async function handleMediaCapture(
   return result;
 }
 
-/** Shared plumbing for describe/resolve so the resolver stays import-cycle free. */
-const resolverDeps: ResolverDeps = {
+const EVAL_DEFAULT_TIMEOUT_MS = 5_000;
+const EVAL_MAX_TIMEOUT_MS = 30_000;
+const EVAL_MAX_CHARS = 100_000;
+
+interface CdpEvalResponse {
+  result?: { type?: string; value?: unknown; description?: string };
+  exceptionDetails?: { text?: string; exception?: { description?: string } };
+}
+
+async function evaluateOnce(
+  tabId: number,
+  expression: string,
+  awaitPromise: boolean,
+  timeoutMs: number,
+): Promise<CdpEvalResponse> {
+  const response = await debuggerController.send<CdpEvalResponse>(
+    tabId,
+    "Runtime.evaluate",
+    {
+      expression,
+      returnByValue: true,
+      awaitPromise,
+      userGesture: true,
+      timeout: timeoutMs,
+    },
+  );
+  return response ?? {};
+}
+
+function capEval(result: EvalResult): EvalResult {
+  if (result.json.length <= EVAL_MAX_CHARS) {
+    return result;
+  }
+  return { ...result, json: result.json.slice(0, EVAL_MAX_CHARS), truncated: true };
+}
+
+/** page.eval: CDP Runtime.evaluate, which bypasses page CSP for the expression. */
+async function handlePageEval(params: Record<string, unknown>): Promise<EvalResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const expression = requireStringParam(params, "expression");
+  if (expression.trim() === "") {
+    throw new RpcFault(ErrorCodes.internal, "expression is required");
+  }
+
+  const awaitPromise = params.awaitPromise === true;
+  let timeoutMs = EVAL_DEFAULT_TIMEOUT_MS;
+  if (typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)) {
+    timeoutMs = Math.max(250, Math.min(EVAL_MAX_TIMEOUT_MS, Math.round(params.timeoutMs)));
+  }
+
+  const audit = expression.replace(/\s+/g, " ").slice(0, 120);
+  console.info(`[chrome-ctl] eval tab=${tabId} await=${awaitPromise} expr=${audit}`);
+
+  let response: CdpEvalResponse;
+  try {
+    response = await evaluateOnce(tabId, expression, awaitPromise, timeoutMs);
+  } catch (error) {
+    const text = describeError(error);
+    if (!/return.*value|serializ/i.test(text)) {
+      throw new RpcFault(ErrorCodes.internal, `eval failed: ${text}`);
+    }
+    // Non-serialisable values (DOM nodes, maps, typed arrays) need explicit JSON.
+    const wrapped = `JSON.stringify((() => { const __v = (${expression}); return __v === undefined ? null : __v; })())`;
+    const fallback = await evaluateOnce(tabId, wrapped, awaitPromise, timeoutMs);
+    if (fallback.exceptionDetails) {
+      throw new RpcFault(ErrorCodes.internal, `eval threw: ${evalExceptionText(fallback)}`);
+    }
+    const json = fallback.result?.value;
+    if (typeof json !== "string") {
+      throw new RpcFault(ErrorCodes.internal, `eval result is not JSON-serialisable: ${text}`);
+    }
+    return capEval({ json, type: "string" });
+  }
+
+  if (response.exceptionDetails) {
+    throw new RpcFault(ErrorCodes.internal, `eval threw: ${evalExceptionText(response)}`);
+  }
+
+  const outcome = response.result ?? {};
+  let json: string;
+  if (outcome.type === "undefined") {
+    json = "null";
+  } else if (outcome.value !== undefined) {
+    try {
+      json = JSON.stringify(outcome.value) ?? "null";
+    } catch {
+      json = JSON.stringify(outcome.description ?? String(outcome.value));
+    }
+  } else {
+    json = JSON.stringify(outcome.description ?? null);
+  }
+
+  return capEval({ json, type: outcome.type });
+}
+
+function evalExceptionText(response: CdpEvalResponse): string {
+  return (
+    response.exceptionDetails?.exception?.description ??
+    response.exceptionDetails?.text ??
+    "uncaught exception"
+  );
+}
+
+/** Shared plumbing for describe/resolve so the resolver stays import-cycle free. */const resolverDeps: ResolverDeps = {
   resolveActionTab,
   ensureContentScriptInjected,
-  sendToContent,
+  sendToContent: sendWithIdentity,
 };
 
 async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
@@ -975,6 +1398,12 @@ async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
           id,
           result: await handlePageResolve(params, resolverDeps),
         };
+      case Methods.pageEval:
+        return { jsonrpc: "2.0", id, result: await handlePageEval(params) };
+      case Methods.pageAttr:
+        return { jsonrpc: "2.0", id, result: await handlePageAttr(params) };
+      case Methods.pageNet:
+        return { jsonrpc: "2.0", id, result: await handlePageNet(params) };
       case Methods.authSSO:
         return { jsonrpc: "2.0", id, result: await sso(params) };
       case Methods.actionClick:

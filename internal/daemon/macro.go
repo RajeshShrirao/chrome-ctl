@@ -197,7 +197,7 @@ func buildMacroStep(pending *pendingMacroStep, result json.RawMessage) (protocol
 		}
 		label := macroTargetLabel(pending.target)
 		var clickResult protocol.ActionClickResult
-		if len(result) > 0 && json.Unmarshal(result, &clickResult) == nil && clickResult.Target.Label != "" {
+		if len(result) > 0 && json.Unmarshal(result, &clickResult) == nil && clickResult.Target != nil && clickResult.Target.Label != "" {
 			label = clickResult.Target.Label
 		}
 		step := protocol.MacroStep{

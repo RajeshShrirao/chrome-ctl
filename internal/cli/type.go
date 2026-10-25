@@ -72,7 +72,29 @@ func formatType(result protocol.ActionTypeResult, id int) string {
 		cadence += fmt.Sprintf(", %d %s", result.TyposInjected, word)
 	}
 
-	line := fmt.Sprintf("OK: Typed %d chars into [%d] (%s).", result.CharsTyped, id, cadence)
+	var line string
+	switch result.Verification {
+	case "empty":
+		line = fmt.Sprintf(
+			"WARN: Typed %d chars into [%d] but the field reads empty — the site may have rejected it (readonly/controlled). Snap, click the field, retry.",
+			result.CharsTyped,
+			id,
+		)
+	case "mismatch":
+		line = fmt.Sprintf(
+			"WARN: Typed %d chars into [%d] but the field reads %q instead. Check the target before retrying.",
+			result.CharsTyped,
+			id,
+			truncateReadBack(result.ReadBack),
+		)
+	default:
+		if result.Verified {
+			line = fmt.Sprintf("OK: Typed %d chars into [%d] (verified; %s).", result.CharsTyped, id, cadence)
+		} else {
+			line = fmt.Sprintf("OK: Typed %d chars into [%d] (%s).", result.CharsTyped, id, cadence)
+		}
+	}
+
 	if result.StateDelta != "" {
 		line += fmt.Sprintf(" State changed: %s.", result.StateDelta)
 	}
@@ -80,4 +102,14 @@ func formatType(result protocol.ActionTypeResult, id int) string {
 		return line + "\n\n" + ensureTrailingNewline(result.Snapshot.FormattedText)
 	}
 	return line + "\n"
+}
+
+// truncateReadBack keeps warning lines readable; the full value stays in --json output.
+func truncateReadBack(value string) string {
+	const limit = 120
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
 }

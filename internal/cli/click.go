@@ -53,15 +53,38 @@ func formatClick(result protocol.ActionClickResult, double bool) string {
 		action = "double-clicked"
 	}
 
-	line := fmt.Sprintf("OK: %s [%d] <%s> %q @%d,%d (%.2fs)",
-		action,
-		result.Target.ID,
-		result.Target.Tag,
-		result.Target.Label,
-		result.Coordinates.X,
-		result.Coordinates.Y,
-		float64(result.DurationMs)/1000,
-	)
+	var line string
+	switch {
+	case result.Target != nil:
+		coords := protocol.ActionCoordinates{}
+		if result.Coordinates != nil {
+			coords = *result.Coordinates
+		}
+		line = fmt.Sprintf("OK: %s [%d] <%s> %q @%d,%d (%.2fs)",
+			action,
+			result.Target.ID,
+			result.Target.Tag,
+			result.Target.Label,
+			coords.X,
+			coords.Y,
+			float64(result.DurationMs)/1000,
+		)
+	case result.Coordinates != nil:
+		line = fmt.Sprintf("OK: %s @%d,%d (%.2fs)",
+			action,
+			result.Coordinates.X,
+			result.Coordinates.Y,
+			float64(result.DurationMs)/1000,
+		)
+	default:
+		line = fmt.Sprintf("OK: %s (%.2fs)", action, float64(result.DurationMs)/1000)
+	}
+	if result.LandedOn != "" {
+		line += fmt.Sprintf(" Landed on %s.", result.LandedOn)
+	}
+	if result.URLChanged {
+		line += " URL changed."
+	}
 	if result.Snapshot != nil {
 		return line + "\n\n" + ensureTrailingNewline(result.Snapshot.FormattedText)
 	}

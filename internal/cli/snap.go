@@ -9,13 +9,19 @@ import (
 )
 
 func newSnapCmd() *cobra.Command {
-	var all, forms bool
+	var all, forms, deep bool
+	var maxElements int
 	cmd := &cobra.Command{
 		Use:   "snap",
 		Short: "Snapshot interactive elements on the page",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			params := protocol.PageSnapParams{All: all, FormsOnly: forms}
+			params := protocol.PageSnapParams{
+				All:         all,
+				FormsOnly:   forms,
+				Deep:        deep,
+				MaxElements: maxElements,
+			}
 			var result protocol.SnapResult
 			if err := callRPC(cmd, protocol.MethodPageSnap, params, &result); err != nil {
 				return err
@@ -26,6 +32,8 @@ func newSnapCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "Include all indexed elements, not just visible ones")
 	cmd.Flags().BoolVar(&forms, "forms", false, "Limit the snapshot to form controls")
+	cmd.Flags().BoolVar(&deep, "deep", false, "Include cursor:pointer controls and bare rows/cells")
+	cmd.Flags().IntVar(&maxElements, "max-elements", 400, "Cap the number of indexed elements")
 	return cmd
 }
 

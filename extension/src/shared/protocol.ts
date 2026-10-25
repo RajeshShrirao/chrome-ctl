@@ -33,6 +33,9 @@ export const Methods = {
   authSSO: "auth.sso",
   pageDescribe: "page.describe",
   pageResolve: "page.resolve",
+  pageEval: "page.eval",
+  pageAttr: "page.attr",
+  pageNet: "page.net",
 } as const;
 
 export const ErrorCodes = {
@@ -45,6 +48,9 @@ export const ErrorCodes = {
   unauthorized: -32006,
   navigationFailed: -32007,
   macroStepFailed: -32008,
+  dispatchedUnconfirmed: -32009,
+  snapshotStale: -32010,
+  featureDisabled: -32011,
   methodNotFound: -32601,
   internal: -32603,
 } as const;
@@ -192,13 +198,31 @@ export interface SnapResult {
   tabId: number;
   title: string;
   url: string;
+  docId: string;
+  snapshotId: number;
+  omitted: number;
   viewport: ViewportInfo;
   elements: SnapElement[];
   formattedText: string;
 }
 
+export interface ReadTable {
+  index: number;
+  caption?: string;
+  headers: string[];
+  rows: string[][];
+}
+
+export interface ReadLink {
+  text: string;
+  href: string;
+}
+
 export interface PageReadResult {
-  markdown: string;
+  markdown?: string;
+  tables?: ReadTable[];
+  links?: ReadLink[];
+  truncated?: boolean;
 }
 
 export interface ActionTarget {
@@ -214,7 +238,8 @@ export interface ActionCoordinates {
 
 export interface ActionClickParams {
   tabId?: number;
-  id: number;
+  id?: number;
+  at?: ActionCoordinates;
   doubleClick?: boolean;
   snap?: boolean;
 }
@@ -222,8 +247,10 @@ export interface ActionClickParams {
 export interface ActionClickResult {
   success: boolean;
   action: string;
-  target: ActionTarget;
-  coordinates: ActionCoordinates;
+  target?: ActionTarget;
+  coordinates?: ActionCoordinates;
+  landedOn?: string;
+  urlChanged?: boolean;
   durationMs: number;
   snapshot?: SnapResult;
 }
@@ -243,6 +270,9 @@ export interface ActionTypeResult {
   durationMs: number;
   typosInjected: number;
   stateDelta?: string;
+  verified: boolean;
+  verification?: string;
+  readBack?: string;
   snapshot?: SnapResult;
 }
 
@@ -285,12 +315,19 @@ export interface PageWaitParams {
   tabId?: number;
   selector?: string;
   idle?: boolean;
+  text?: string;
+  ignoreCase?: boolean;
+  network?: boolean;
+  quietMs?: number;
   timeoutMs?: number;
 }
 
 export interface PageWaitResult {
   waitedMs: number;
   matched: boolean;
+  reason?: string;
+  inflight?: number;
+  requests?: number;
 }
 
 export interface MediaCaptureParams {
@@ -301,6 +338,7 @@ export interface MediaCaptureParams {
 export interface MediaCaptureResult {
   tabId: number;
   pngBase64: string;
+  capturePath?: "captureVisibleTab" | "cdp";
   viewportWidth: number;
   viewportHeight: number;
   devicePixelRatio?: number;
@@ -358,4 +396,72 @@ export interface AuthSsoResult {
   selectedAccount: string;
   redirectCompleted: boolean;
   parentTabUrl: string;
+}
+
+export interface EvalParams {
+  tabId?: number;
+  expression: string;
+  awaitPromise?: boolean;
+  timeoutMs?: number;
+}
+
+export interface EvalResult {
+  json: string;
+  type?: string;
+  truncated?: boolean;
+}
+
+export interface PageAttrParams {
+  tabId?: number;
+  id?: number;
+  selector?: string;
+}
+
+export interface ElementRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PageAttrResult {
+  docId: string;
+  snapshotId: number;
+  tag: string;
+  role?: string;
+  type?: string;
+  label?: string;
+  value?: string;
+  state?: string;
+  href?: string;
+  src?: string;
+  name?: string;
+  elementId?: string;
+  rect: ElementRect;
+  attributes?: Record<string, string>;
+  matches: number;
+}
+
+export interface NetEntry {
+  requestId?: string;
+  url: string;
+  method?: string;
+  type?: string;
+  status?: number;
+  error?: string;
+  startedAt?: number;
+  durationMs?: number;
+}
+
+export interface PageNetParams {
+  tabId?: number;
+  errorsOnly?: boolean;
+  limit?: number;
+  sinceMs?: number;
+}
+
+export interface PageNetResult {
+  entries: NetEntry[];
+  enabledAt?: number;
+  note?: string;
 }

@@ -14,9 +14,12 @@ import (
 )
 
 const (
-	waitRPCTimeoutMs = 10000
-	maxWaitMs        = 600000
-	waitTimeout      = 30 * time.Second
+	waitRPCTimeoutMs     = 10000
+	waitNetworkTimeoutMs = 15000
+	waitMaxRPCms         = 30000
+	waitRPCBudget        = 40 * time.Second
+	waitDefaultQuietMs   = 500
+	maxWaitMs            = 600000
 )
 
 type waitMode int
@@ -34,16 +37,54 @@ type waitSpec struct {
 	selector string
 }
 
-func newWaitCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "wait <ms|idle|selector>",
-		Short: "Wait for a duration, page idle, or a selector",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runWait,
-	}
+type waitFlags struct {
+	network    bool
+	text       string
+	ignoreCase bool
+	timeoutMs  int
+	quietMs    int
 }
 
-func runWait(cmd *cobra.Command, args []string) error {
+func newWaitCmd() *cobra.Command {
+	var flags waitFlags
+	cmd := &cobra.Command{
+		Use:   "wait [<ms|ms-ms|idle|selector>]",
+		Short: "Wait for a duration, page idle, a selector, body text, or network quiet",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWait(cmd, args, flags)
+		},
+	}
+	cmd.Flags().BoolVar(&flags.network, "network", false, "Wait until no requests are in flight and none have started for --quiet-ms")
+	cmd.Flags().StringVar(&flags.text, "for-text", "", "Wait until this text appears in the page body")
+	cmd.Flags().BoolVar(&flags.ignoreCase, "ignore-case", false, "Match --for-text case-insensitively")
+	cmd.Flags().IntVar(&flags.timeoutMs, "timeout", waitNetworkTimeoutMs, "RPC wait deadline in milliseconds")
+	cmd.Flags().IntVar(&flags.quietMs, "quiet-ms", waitDefaultQuietMs, "Quiet window for --network in milliseconds")
+	return cmd
+}
+
+func runWait(cmd *cobra.Command, args []string, flags waitFlags) error {
+	flags.text = strings.TrimSpace(flags.text)
+	usesFlags := flags.network || flags.text != ""
+
+	if len(args) == 0 && !usesFlags {
+		return errors.New("wait requires a duration, idle, selector, --network, or --for-text")
+	}
+	if len(args) > 0 && usesFlags {
+		return errors.New("wait: pass either a positional argument or --network/--for-text, not both")
+	}
+
+	if flags.timeoutMs <= 0 || flags.timeoutMs > waitMaxRPCms {
+		return fmt.Errorf("invalid --timeout %d: must be between 1 and %d milliseconds", flags.timeoutMs, waitMaxRPCms)
+	}
+	if flags.quietMs <= 0 || flags.quietMs > waitMaxRPCms {
+		return fmt.Errorf("invalid --quiet-ms %d: must be between 1 and %d milliseconds", flags.quietMs, waitMaxRPCms)
+	}
+
+	if usesFlags {
+		return runConditionWait(cmd, flags)
+	}
+
 	spec, err := parseWaitArg(args[0])
 	if err != nil {
 		return err
@@ -63,19 +104,19 @@ func runWait(cmd *cobra.Command, args []string) error {
 	case waitIdle:
 		var result protocol.PageWaitResult
 		params := protocol.PageWaitParams{Idle: true, TimeoutMs: waitRPCTimeoutMs}
-		if err := callRPCWithTimeout(cmd, protocol.MethodPageWait, params, &result, waitTimeout); err != nil {
+		if err := callRPCWithTimeout(cmd, protocol.MethodPageWait, params, &result, waitRPCBudget); err != nil {
 			return err
 		}
 		if result.Matched {
 			fmt.Fprintf(cmd.OutOrStdout(), "OK: idle after %s\n", formatWaitDuration(result.WaitedMs))
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "OK: waited %s (still busy)\n", formatWaitDuration(waitRPCTimeoutMs))
+			fmt.Fprintf(cmd.OutOrStdout(), "WARN: DOM idle wait timed out after %s; the page may still be fetching. Use wait --network or wait --for-text.\n", formatWaitDuration(waitRPCTimeoutMs))
 		}
 
 	case waitSelector:
 		var result protocol.PageWaitResult
 		params := protocol.PageWaitParams{Selector: spec.selector, TimeoutMs: waitRPCTimeoutMs}
-		if err := callRPCWithTimeout(cmd, protocol.MethodPageWait, params, &result, waitTimeout); err != nil {
+		if err := callRPCWithTimeout(cmd, protocol.MethodPageWait, params, &result, waitRPCBudget); err != nil {
 			return err
 		}
 		if !result.Matched {
@@ -83,6 +124,53 @@ func runWait(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "OK: selector %q appeared after %s\n",
 			spec.selector, formatWaitDuration(result.WaitedMs))
+	}
+	return nil
+}
+
+func runConditionWait(cmd *cobra.Command, flags waitFlags) error {
+	params := protocol.PageWaitParams{
+		Network:   flags.network,
+		Text:      flags.text,
+		TimeoutMs: flags.timeoutMs,
+		QuietMs:   flags.quietMs,
+	}
+	if cmd.Flags().Changed("ignore-case") {
+		ignoreCase := flags.ignoreCase
+		params.IgnoreCase = &ignoreCase
+	}
+
+	var result protocol.PageWaitResult
+	if err := callRPCWithTimeout(cmd, protocol.MethodPageWait, params, &result, waitRPCBudget); err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	duration := formatWaitDuration(result.WaitedMs)
+
+	if result.Matched {
+		switch {
+		case flags.network && flags.text != "":
+			fmt.Fprintf(out, "OK: network quiet and text %q appeared after %s (%d requests)\n", flags.text, duration, result.Requests)
+		case flags.network:
+			fmt.Fprintf(out, "OK: network quiet after %s (%d requests)\n", duration, result.Requests)
+		default:
+			fmt.Fprintf(out, "OK: text %q appeared after %s\n", flags.text, duration)
+		}
+		return nil
+	}
+
+	// A timeout is unknown state, not failure: the caller must re-check rather
+	// than assume the page never changed.
+	switch {
+	case flags.network && result.Inflight > 0:
+		fmt.Fprintf(out, "WARN: network still busy after %s (%d in flight, %d requests seen). State unknown.\n", duration, result.Inflight, result.Requests)
+	case flags.network && flags.text != "":
+		fmt.Fprintf(out, "WARN: network quiet but text %q did not appear within %s. State unknown.\n", flags.text, duration)
+	case flags.network:
+		fmt.Fprintf(out, "WARN: network never settled after %s (%d requests seen). State unknown.\n", duration, result.Requests)
+	default:
+		fmt.Fprintf(out, "WARN: text %q did not appear within %s. State unknown.\n", flags.text, duration)
 	}
 	return nil
 }
