@@ -13,6 +13,7 @@ import type {
   ContentResponse,
   ContentStateEntry,
   ContentTargetPayload,
+  ContentTargetRequest,
   ContentValuePayload,
 } from "../shared/content.js";
 import { ErrorCodes } from "../shared/protocol.js";
@@ -107,16 +108,29 @@ function unexpectedResponse(): RpcFault {
   return new RpcFault(ErrorCodes.internal, "unexpected content script response");
 }
 
+export interface TargetQuery {
+  id?: number;
+  selector?: string;
+  text?: string;
+}
+
 async function requestTarget(
   sendContent: ContentSender,
   tabId: number,
-  id: number,
+  query: TargetQuery | number,
 ): Promise<ContentTargetPayload> {
-  const response = await sendContent(tabId, {
+  const request: ContentTargetRequest = {
     channel: CONTENT_CHANNEL,
     type: "target",
-    id,
-  });
+  };
+  if (typeof query === "number") {
+    request.id = query;
+  } else {
+    request.id = query.id;
+    request.selector = query.selector;
+    request.text = query.text;
+  }
+  const response = await sendContent(tabId, request);
   if (!response.ok) {
     throw new RpcFault(ErrorCodes.elementNotFound, response.error);
   }
@@ -311,13 +325,14 @@ function stateDelta(before: ContentStateEntry[], after: ContentStateEntry[]): st
 
 export async function click(
   tabId: number,
-  id: number,
+  query: TargetQuery | number,
   options: ClickOptions,
 ): Promise<ActionClickResult> {
   return run(async () => {
     const startedAt = Date.now();
-    const target = await requestTarget(options.sendContent, tabId, id);
-    requireInteractable(target, id);
+    const target = await requestTarget(options.sendContent, tabId, query);
+    const targetId = target.id ?? (typeof query === "number" ? query : 0);
+    requireInteractable(target, targetId);
 
     const rect: ClickRect = {
       left: target.x,
@@ -329,35 +344,38 @@ export async function click(
 
     let start: Point2D | undefined = lastPointer.get(tabId);
     if (!start) {
-      const metrics = await requestMetrics(options.sendContent, tabId);
-      start = { x: metrics.viewportWidth / 2, y: metrics.viewportHeight / 2 };
+      start = { x: landing.x, y: landing.y };
     }
-
-    const path = planMousePath(start, landing, target.w);
-    for (const point of path.points) {
-      await debuggerController.send(
-        tabId,
-        "Input.dispatchMouseEvent",
-        mouseEventParams("mouseMoved", point.x, point.y),
-      );
-      await sleep(point.delayMs);
-    }
-
-    await sleep(randomInt(30, 80));
 
     const x = Math.round(landing.x);
     const y = Math.round(landing.y);
 
-    // Probe before pressing: a click that closes a menu or opens a modal
-    // reflows the page, so a post-click probe can name a different element.
-    const landedOn = await requestPointLabel(options.sendContent, tabId, x, y);
+    // Human ballistic movement (fast, smooth, natural)
+    const dist = Math.hypot(x - start.x, y - start.y);
+    if (dist > 150) {
+      const midX = Math.round((start.x + x) / 2);
+      const midY = Math.round((start.y + y) / 2);
+      await debuggerController.send(
+        tabId,
+        "Input.dispatchMouseEvent",
+        mouseEventParams("mouseMoved", midX, midY),
+      );
+      await sleep(10);
+    }
+
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mouseMoved", x, y),
+    );
+    await sleep(randomInt(10, 20));
 
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
       mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 1 }),
     );
-    await sleep(randomInt(45, 95));
+    await sleep(randomInt(20, 35));
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
@@ -365,13 +383,13 @@ export async function click(
     );
 
     if (options.doubleClick === true) {
-      await sleep(randomInt(70, 140));
+      await sleep(randomInt(40, 70));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
         mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 2 }),
       );
-      await sleep(randomInt(45, 95));
+      await sleep(randomInt(20, 35));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
@@ -381,12 +399,29 @@ export async function click(
 
     lastPointer.set(tabId, { x, y });
 
+    // Allow DOM micro-task to process click event (20ms)
+    await sleep(20);
+
+    let consequence: string | undefined = undefined;
+    try {
+      const probe = await options.sendContent(tabId, {
+        channel: CONTENT_CHANNEL,
+        type: "consequence",
+        id: targetId,
+      });
+      if (probe.ok && probe.type === "consequence" && probe.consequence) {
+        consequence = probe.consequence;
+      }
+    } catch {
+      // best effort
+    }
+
     return {
       success: true,
       action: "click",
-      target: { id, tag: target.tag, label: target.label },
+      target: { id: targetId, tag: target.tag, label: target.label },
       coordinates: { x, y },
-      landedOn,
+      consequence,
       durationMs: Date.now() - startedAt,
     };
   });
@@ -407,14 +442,13 @@ export async function clickAt(
       "Input.dispatchMouseEvent",
       mouseEventParams("mouseMoved", x, y),
     );
-    await sleep(randomInt(30, 80));
-    const landedOn = await requestPointLabel(options.sendContent, tabId, x, y);
+    await sleep(randomInt(10, 20));
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
       mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 1 }),
     );
-    await sleep(randomInt(45, 95));
+    await sleep(randomInt(20, 35));
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
@@ -422,13 +456,13 @@ export async function clickAt(
     );
 
     if (options.doubleClick === true) {
-      await sleep(randomInt(70, 140));
+      await sleep(randomInt(40, 70));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
         mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 2 }),
       );
-      await sleep(randomInt(45, 95));
+      await sleep(randomInt(20, 35));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
@@ -438,11 +472,26 @@ export async function clickAt(
 
     lastPointer.set(tabId, { x, y });
 
+    await sleep(20);
+
+    let consequence: string | undefined = undefined;
+    try {
+      const probe = await options.sendContent(tabId, {
+        channel: CONTENT_CHANNEL,
+        type: "consequence",
+      });
+      if (probe.ok && probe.type === "consequence" && probe.consequence) {
+        consequence = probe.consequence;
+      }
+    } catch {
+      // best effort
+    }
+
     return {
       success: true,
-      action: "clickAt",
+      action: "click",
       coordinates: { x, y },
-      landedOn,
+      consequence,
       durationMs: Date.now() - startedAt,
     };
   });

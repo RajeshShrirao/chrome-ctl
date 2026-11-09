@@ -306,10 +306,39 @@ func TestClickCommand(t *testing.T) {
 }
 
 func TestClickCommandRejectsInvalidID(t *testing.T) {
-	for _, arg := range []string{"0", "-1", "abc"} {
+	for _, arg := range []string{"0", "-1", "   "} {
 		if _, err := executePhase2(t, "click", arg); err == nil {
 			t.Errorf("click %q error = nil, want error", arg)
 		}
+	}
+}
+
+func TestClickCommandWithConsequenceAndText(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	requests := make(chan phase2Request, 1)
+	srv := fakePhase2Server(t, token, phase2Result(
+		`{"success":true,"action":"click","target":{"id":41,"tag":"input","label":"CPU"},`+
+			`"coordinates":{"x":320,"y":410},"consequence":"selected (•)","durationMs":50,`+
+			`"dispatchMs":40,"settleMs":10}`), requests)
+	defer srv.Close()
+	t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+	out, err := executePhase2(t, "click", "CPU")
+	if err != nil {
+		t.Fatalf("click CPU error = %v", err)
+	}
+	want := "OK: clicked [41] <input> \"CPU\" @320,410 -> selected (•) (0.05s: dispatch 0.04s, DOM settle 0.01s)\n"
+	if out != want {
+		t.Errorf("click output = %q, want %q", out, want)
+	}
+
+	req := <-requests
+	var params protocol.ActionClickParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if params.Text != "CPU" {
+		t.Errorf("params.Text = %q, want CPU", params.Text)
 	}
 }
 

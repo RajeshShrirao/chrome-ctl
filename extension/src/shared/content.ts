@@ -40,7 +40,9 @@ export interface ContentReadRequest {
 export interface ContentTargetRequest {
   channel: typeof CONTENT_CHANNEL;
   type: "target";
-  id: number;
+  id?: number;
+  selector?: string;
+  text?: string;
   expectedDocId?: string;
 }
 
@@ -119,6 +121,17 @@ export interface ContentFormStateRequest {
   type: "formstate";
 }
 
+/** Check immediate consequence of a click on an element or page. */
+export interface ContentConsequenceRequest {
+  channel: typeof CONTENT_CHANNEL;
+  type: "consequence";
+  id?: number;
+  initialUrl?: string;
+  beforeChecked?: boolean;
+  beforeValue?: string;
+  beforeDisabled?: boolean;
+}
+
 export type ContentRequest =
   | ContentPingRequest
   | ContentSnapRequest
@@ -133,7 +146,8 @@ export type ContentRequest =
   | ContentWaitRequest
   | ContentDescribeRequest
   | ContentResolveRequest
-  | ContentFormStateRequest;
+  | ContentFormStateRequest
+  | ContentConsequenceRequest;
 
 export interface SnapPayload {
   docId: string;
@@ -241,6 +255,7 @@ export type ContentResponse =
   | { ok: true; type: "describe"; target: MacroTarget }
   | { ok: true; type: "resolve"; resolved: PageResolveResult }
   | { ok: true; type: "formstate"; controls: FormControlState[] }
+  | { ok: true; type: "consequence"; consequence?: string }
   | { ok: false; error: string };
 
 export const READ_MAX_CHARS = 100_000;

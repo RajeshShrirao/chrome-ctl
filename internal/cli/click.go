@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,21 +17,34 @@ func newClickCmd() *cobra.Command {
 	var snap, double bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
-		Use:   "click <id>",
-		Short: "Click an indexed element",
+		Use:   "click <id | text | css=selector>",
+		Short: "Click an element by id, visible text, or CSS selector",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := parseActionID(args[0])
-			if err != nil {
-				return err
-			}
-
+			arg := strings.TrimSpace(args[0])
 			params := protocol.ActionClickParams{
-				ID:          id,
 				DoubleClick: double,
 				Snap:        snap,
 				TimeoutMs:   int(timeout.Milliseconds()),
 			}
+
+			if id, err := strconv.Atoi(arg); err == nil {
+				if id <= 0 {
+					return fmt.Errorf("invalid element id %q: must be a positive integer", arg)
+				}
+				params.ID = id
+			} else if selector, ok := strings.CutPrefix(arg, "css="); ok {
+				if strings.TrimSpace(selector) == "" {
+					return errors.New("css selector cannot be empty")
+				}
+				params.Selector = selector
+			} else {
+				if arg == "" {
+					return errors.New("target cannot be empty")
+				}
+				params.Text = arg
+			}
+
 			var result protocol.ActionClickResult
 			if err := callRPCWithTimeout(cmd, protocol.MethodActionClick, params, &result, timeout); err != nil {
 				return err
@@ -69,6 +83,11 @@ func formatClick(result protocol.ActionClickResult, double bool) string {
 		)
 	}
 
+	consequence := ""
+	if result.Consequence != "" {
+		consequence = " -> " + result.Consequence
+	}
+
 	var line string
 	switch {
 	case result.Target != nil:
@@ -76,29 +95,43 @@ func formatClick(result protocol.ActionClickResult, double bool) string {
 		if result.Coordinates != nil {
 			coords = *result.Coordinates
 		}
-		line = fmt.Sprintf("OK: %s [%d] <%s> %q @%d,%d (%s)",
-			action,
-			result.Target.ID,
-			result.Target.Tag,
-			result.Target.Label,
-			coords.X,
-			coords.Y,
-			timing,
-		)
+		if result.Target.ID > 0 {
+			line = fmt.Sprintf("OK: %s [%d] <%s> %q @%d,%d%s (%s)",
+				action,
+				result.Target.ID,
+				result.Target.Tag,
+				result.Target.Label,
+				coords.X,
+				coords.Y,
+				consequence,
+				timing,
+			)
+		} else {
+			line = fmt.Sprintf("OK: %s <%s> %q @%d,%d%s (%s)",
+				action,
+				result.Target.Tag,
+				result.Target.Label,
+				coords.X,
+				coords.Y,
+				consequence,
+				timing,
+			)
+		}
 	case result.Coordinates != nil:
-		line = fmt.Sprintf("OK: %s @%d,%d (%s)",
+		line = fmt.Sprintf("OK: %s @%d,%d%s (%s)",
 			action,
 			result.Coordinates.X,
 			result.Coordinates.Y,
+			consequence,
 			timing,
 		)
 	default:
-		line = fmt.Sprintf("OK: %s (%s)", action, timing)
+		line = fmt.Sprintf("OK: %s%s (%s)", action, consequence, timing)
 	}
 	if result.LandedOn != "" {
 		line += fmt.Sprintf(" Landed on %s.", result.LandedOn)
 	}
-	if result.URLChanged {
+	if result.URLChanged && result.Consequence == "" {
 		line += " URL changed."
 	}
 	if result.Snapshot != nil {

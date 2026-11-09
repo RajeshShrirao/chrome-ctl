@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 
 import { extractFormState } from "../src/content/forms.ts";
-import { buildAttrPayload } from "../src/content/interact.ts";
+import { buildAttrPayload, checkConsequence, resolveTargetByQuery } from "../src/content/interact.ts";
 import { buildDescriptor, resolveFramePath, resolveTarget } from "../src/content/describe.ts";
 
 function makeDoc(html: string): Document {
@@ -129,4 +129,39 @@ test("buildDescriptor and resolveTarget roundtrip with framePath", async () => {
   const resolved = await resolveTarget(doc, index, desc, 0);
   assert.equal(resolved.label, "Save Draft");
   assert.equal(index.get(resolved.id), button);
+});
+
+test("resolveTargetByQuery resolves by text and css selector", () => {
+  const doc = makeDoc(`
+    <button id="btn-next">Next Step</button>
+    <a href="/login" aria-label="Sign In">Sign In</a>
+  `);
+  const btn = doc.getElementById("btn-next")!;
+  stubRect(btn, { x: 100, y: 200, w: 80, h: 30 });
+
+  const index = new Map<number, Element>();
+  const targetByText = resolveTargetByQuery(doc, index, { text: "Next Step" });
+  assert.equal(targetByText.tag, "button");
+  assert.equal(targetByText.label, "Next Step");
+  assert.equal(targetByText.x, 100);
+
+  const targetByCss = resolveTargetByQuery(doc, index, { selector: "#btn-next" });
+  assert.equal(targetByCss.tag, "button");
+});
+
+test("checkConsequence identifies selection, dialogs, and navigation", () => {
+  const doc = makeDoc(`
+    <input type="radio" id="r1" name="q" value="cpu" checked />
+    <dialog open aria-label="Confirmation Modal"></dialog>
+  `);
+  const r1 = doc.getElementById("r1")!;
+
+  const index = new Map<number, Element>();
+  index.set(1, r1);
+
+  const radioConsequence = checkConsequence(doc, index, { id: 1, beforeChecked: false });
+  assert.equal(radioConsequence, "selected (•)");
+
+  const dialogConsequence = checkConsequence(doc, undefined, {});
+  assert.equal(dialogConsequence, 'opened dialog "Confirmation Modal"');
 });

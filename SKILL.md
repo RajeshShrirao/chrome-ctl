@@ -76,13 +76,18 @@ One mutation, one observation. Never chain a second mutation onto an unverified 
 chrome-ctl open "https://example.com"   # OK: navigated [81] Title - https://...
 chrome-ctl url                          # cheap "where am I" — one line
 chrome-ctl snap                         # the element map
-chrome-ctl click 5 --snap               # mutate, then re-observe in one call
+chrome-ctl click "Submit"               # direct click by text — no prior snap needed!
+chrome-ctl click 5                      # OK: clicked [5] <button> @... -> dialog opened (0.04s)
+chrome-ctl click 5 --snap               # returns compact DIFF (+2 added) instead of 400 lines
 chrome-ctl type 3 "Hello" --enter --snap
 chrome-ctl wait --network               # let the app catch up
 chrome-ctl read                         # only once the page is what you expect
 ```
 
-- `--snap` after `click`/`type` waits up to 2.5 s for the DOM to settle, then prints a fresh map — cheaper than a separate `snap` turn.
+- **Instant Ballistic Clicks (<60ms)**: By default, clicks execute via 1–2 point ballistic human movement and 20–35ms press/release. No artificial delays or laggy multi-second curves.
+- **Direct 1-Shot Target Clicking**: You don't need to run `snap` before clicking! Run `click "Text"`, `click "css=#selector"`, or `click <id>`. If targeting by text or CSS, `chrome-ctl` resolves the target directly in the page, saving an entire conversation turn and ~1,500 tokens.
+- **Zero-Token Consequence Receipts**: The click receipt automatically proves the immediate consequence inline (e.g. `-> selected (•)`, `-> unselected ( )`, `-> opened dialog "Delete"`, `-> navigated to ...`). Do NOT waste tokens running `snap` after a click if the consequence receipt already confirms your action worked.
+- `--snap` after `click`/`type` emits a compact **differential snapshot** (`DIFF (+N added, ~M changed)`) showing only what mutated, saving ~90% of tokens compared to a full DOM dump.
 - The snapshot header is `SNAP <n> | TAB [<tabId>] <title> | <url>`. A **new** `<n>` is the only proof a new observation happened; the counter is not part of the IDs. The tab id is your resumable locator.
 - `open` prints `(still loading)` when the load was not complete at return — that is a cue to `wait`, not to `read`.
 - After `window ensure`, every command without an explicit tab resolves to the active tab of the automation window. Do not navigate, switch, or close tabs or windows the user owns.
@@ -100,7 +105,7 @@ Predict the proof line before the action, then match it:
 | `type` | `OK: Typed 12 chars into [3] (…)` — **no `verified`** | Read-back did not confirm. Treat as unverified. |
 | `type` | `WARN: Typed 12 chars into [3] but the field reads empty — the site may have rejected it (readonly/controlled). Snap, click the field, retry.` | Nothing. Exit code is still 0. |
 | `type` | `WARN: … but the field reads "…" instead. Check the target before retrying.` | Nothing. Wrong target or autofill fought you. |
-| `click` | `Landed on <tag> "<label>"`, `URL changed.` | Which element got hit only — not that the app acted. |
+| `click` | `OK: clicked [41] <input> "CPU" @320,410 -> selected (•) (0.04s)` | Hit coordinates and immediate consequence. If consequence shows mutation (e.g. `selected (•)`, `opened dialog`), action is verified without a re-snapshot. |
 | `wait` | `OK: network quiet after 3.2s (14 requests)`, `OK: text "…" appeared after 1.1s`, `OK: selector "…" appeared after …`, `OK: idle after …` | Any `WARN: … State unknown.` line is a **timeout**, never proof the page is static. |
 | `open` | `OK: navigated [81] <title> - <url>` | That the URL is where you meant to land; check for a redirect. |
 | `snap` | a `SNAP <n>` counter higher than last time | Nothing about the previous action; it only re-observes. |

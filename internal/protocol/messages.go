@@ -281,6 +281,8 @@ type PageReadResult struct {
 type ActionClickParams struct {
 	TabID       *int               `json:"tabId,omitempty"`
 	ID          int                `json:"id,omitempty"`
+	Selector    string             `json:"selector,omitempty"`
+	Text        string             `json:"text,omitempty"`
 	At          *ActionCoordinates `json:"at,omitempty"`
 	DoubleClick bool               `json:"doubleClick,omitempty"`
 	Snap        bool               `json:"snap,omitempty"`
@@ -305,6 +307,7 @@ type ActionClickResult struct {
 	Coordinates *ActionCoordinates `json:"coordinates,omitempty"`
 	LandedOn    string             `json:"landedOn,omitempty"`
 	URLChanged  bool               `json:"urlChanged,omitempty"`
+	Consequence string             `json:"consequence,omitempty"`
 	DurationMs  int                `json:"durationMs"`
 	DispatchMs  int                `json:"dispatchMs,omitempty"`
 	SettleMs    int                `json:"settleMs,omitempty"`

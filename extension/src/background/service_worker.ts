@@ -677,11 +677,15 @@ interface SnapRequestOptions {
   formsOnly?: boolean;
   deep?: boolean;
   frames?: boolean;
+  diff?: boolean;
   maxElements?: number;
 }
 
-const SNAP_SETTLE_MS = 1_200;
-const URL_PROBE_MS = 150;
+const lastSnapElements = new Map<number, SnapElement[]>();
+const lastSnapUrl = new Map<number, string>();
+
+const SNAP_SETTLE_MS = 250;
+const URL_PROBE_MS = 25;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -751,13 +755,51 @@ async function buildSnapResult(
     headerLines.push("NOTE: page content may be inside an iframe; try snap --frames");
   }
 
-  const formattedText = [
-    ...headerLines,
-    ...lines,
-    ...(omitted > 0
-      ? [`OMITTED: ${omitted} candidates (use snap --deep / --max-elements to see more)`]
-      : []),
-  ].join("\n");
+  let formattedText: string;
+  const lastElements = lastSnapElements.get(tabId);
+  lastSnapElements.set(tabId, elements);
+
+  if (options.diff === true && lastElements && lastElements.length > 0 && current.url === lastSnapUrl.get(tabId)) {
+    const oldById = new Map<number, SnapElement>();
+    for (const el of lastElements) {
+      oldById.set(el.id, el);
+    }
+    const added: string[] = [];
+    const changed: string[] = [];
+
+    for (const el of elements) {
+      const old = oldById.get(el.id);
+      if (!old) {
+        added.push(`+ [${el.id}] <${el.tag}> "${el.label}" @${el.x},${el.y}`);
+      } else if (old.label !== el.label || old.x !== el.x || old.y !== el.y) {
+        changed.push(`~ [${el.id}] <${el.tag}> "${el.label}" @${el.x},${el.y}`);
+      }
+    }
+
+    if (added.length > 0 || changed.length > 0) {
+      const diffLines = [
+        ...headerLines,
+        `DIFF (+${added.length} added, ~${changed.length} changed):`,
+        ...added,
+        ...changed,
+      ];
+      formattedText = diffLines.join("\n");
+    } else {
+      formattedText = [
+        ...headerLines,
+        `DIFF: no interactive elements added or changed.`,
+      ].join("\n");
+    }
+  } else {
+    formattedText = [
+      ...headerLines,
+      ...lines,
+      ...(omitted > 0
+        ? [`OMITTED: ${omitted} candidates (use snap --deep / --max-elements to see more)`]
+        : []),
+    ].join("\n");
+  }
+  lastSnapUrl.set(tabId, current.url ?? "");
 
   lastSnap.set(tabId, { docId, snapshotId });
 
@@ -1080,19 +1122,20 @@ async function handleActionClick(
   const at = parseCoordinates(params.at);
   const hasId = typeof params.id === "number" && Number.isFinite(params.id) && params.id > 0;
   const id = hasId ? (params.id as number) : 0;
+  const selector = typeof params.selector === "string" && params.selector.trim() !== "" ? params.selector.trim() : undefined;
+  const text = typeof params.text === "string" && params.text.trim() !== "" ? params.text.trim() : undefined;
 
-  if (at !== null && hasId) {
-    throw new RpcFault(ErrorCodes.internal, "provide either id or at, not both");
-  }
-  if (at === null && !hasId) {
-    throw new RpcFault(ErrorCodes.internal, "id or at is required");
+  if (at === null && !hasId && !selector && !text) {
+    throw new RpcFault(ErrorCodes.internal, "id, selector, text, or at is required");
   }
 
   await ensureContentScriptInjected(tabId);
 
+  const query = hasId ? id : { id: 0, selector, text };
+
   const result =
     at === null
-      ? await click(tabId, id, {
+      ? await click(tabId, query, {
           doubleClick: params.doubleClick === true,
           sendContent: sendWithIdentity,
         })
@@ -1101,14 +1144,15 @@ async function handleActionClick(
           sendContent: sendWithIdentity,
         });
 
-  // Report a navigation caused by the click, but never turn a successful
-  // dispatch into an error if the probe itself fails.
+  // Fast navigation check
   const initialURL = tab.url ?? "";
   if (initialURL !== "") {
-    await delay(URL_PROBE_MS);
     try {
       const current = await chrome.tabs.get(tabId);
       result.urlChanged = (current.url ?? "") !== initialURL;
+      if (result.urlChanged && !result.consequence) {
+        result.consequence = `navigated to ${current.url}`;
+      }
     } catch {
       result.urlChanged = false;
     }
@@ -1120,7 +1164,7 @@ async function handleActionClick(
     const settleStart = Date.now();
     await settleBeforeSnap(tabId);
     settleMs = Date.now() - settleStart;
-    result.snapshot = await buildSnapResult(tab);
+    result.snapshot = await buildSnapResult(tab, { diff: true });
   }
   result.settleMs = settleMs;
   result.durationMs = result.dispatchMs + result.settleMs;
@@ -1145,7 +1189,7 @@ async function handleActionType(
 
   if (params.snap === true) {
     await settleBeforeSnap(tabId);
-    result.snapshot = await buildSnapResult(tab);
+    result.snapshot = await buildSnapResult(tab, { diff: true });
   }
   return result;
 }

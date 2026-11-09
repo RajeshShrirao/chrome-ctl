@@ -386,6 +386,158 @@ export function buildTargetPayload(
   return describeTargetElement(doc, resolveIndexedElement(index, id), id);
 }
 
+/**
+ * Resolve an element target by id, CSS selector, or visible text / aria-label.
+ */
+export function resolveTargetByQuery(
+  doc: Document,
+  index: Map<number, Element> | undefined,
+  query: { id?: number; selector?: string; text?: string },
+): ContentTargetPayload {
+  let el: Element | null = null;
+  let targetId = query.id ?? 0;
+
+  if (typeof query.id === "number" && query.id > 0) {
+    el = resolveIndexedElement(index, query.id);
+  } else if (typeof query.selector === "string" && query.selector.trim() !== "") {
+    const selector = query.selector.trim();
+    let found: Element[] = [];
+    try {
+      found = Array.from(doc.querySelectorAll(selector));
+    } catch (e) {
+      throw new Error(`invalid selector "${selector}": ${errorText(e)}`);
+    }
+    if (found.length === 0) {
+      throw new Error(`selector "${selector}" matched no elements`);
+    }
+    el = found[0];
+  } else if (typeof query.text === "string" && query.text.trim() !== "") {
+    const textTarget = query.text.trim().toLowerCase();
+    const candidates = Array.from(
+      doc.querySelectorAll("button, a, input[type='button'], input[type='submit'], summary, [role='button'], [role='link'], label"),
+    );
+    for (const c of candidates) {
+      const label = (c.getAttribute("aria-label") ?? c.textContent ?? (c as HTMLInputElement).value ?? "").trim().toLowerCase();
+      if (label === textTarget) {
+        el = c;
+        break;
+      }
+    }
+    if (!el) {
+      for (const c of candidates) {
+        const label = (c.getAttribute("aria-label") ?? c.textContent ?? (c as HTMLInputElement).value ?? "").trim().toLowerCase();
+        if (label.includes(textTarget)) {
+          el = c;
+          break;
+        }
+      }
+    }
+    if (!el) {
+      throw new Error(`no element found matching text "${query.text.trim()}"`);
+    }
+  } else {
+    throw new Error("id, selector, or text is required");
+  }
+
+  if (!targetId && index) {
+    for (const [k, v] of index.entries()) {
+      if (v === el) {
+        targetId = k;
+        break;
+      }
+    }
+    if (!targetId) {
+      let max = 0;
+      for (const k of index.keys()) {
+        if (k > max) max = k;
+      }
+      targetId = max + 1;
+      index.set(targetId, el);
+    }
+  }
+
+  return describeTargetElement(doc, el, targetId);
+}
+
+/**
+ * Detect consequence of a click: element state mutation, newly opened dialog/menu,
+ * alert message, or navigation.
+ */
+export function checkConsequence(
+  doc: Document,
+  index: Map<number, Element> | undefined,
+  params: {
+    id?: number;
+    initialUrl?: string;
+    beforeChecked?: boolean;
+    beforeValue?: string;
+    beforeDisabled?: boolean;
+  },
+): string {
+  if (params.initialUrl && doc.location.href !== params.initialUrl) {
+    const title = doc.title ? ` (title: "${doc.title.slice(0, 40)}")` : "";
+    return `navigated to ${doc.location.pathname || doc.location.href}${title}`;
+  }
+
+  if (typeof params.id === "number" && params.id > 0 && index) {
+    const el = index.get(params.id);
+    if (el) {
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute("type") ?? "").toLowerCase();
+      const isRadioOrCheckbox = tag === "input" && (type === "radio" || type === "checkbox");
+
+      if (isRadioOrCheckbox) {
+        const checked = (el as HTMLInputElement).checked;
+        if (type === "radio") {
+          return checked ? "selected (•)" : "unselected ( )";
+        }
+        return checked ? "selected [x]" : "unselected [ ]";
+      }
+
+      if (tag === "select") {
+        const val = (el as HTMLSelectElement).value;
+        if (val) {
+          return `value "${val}"`;
+        }
+      }
+
+      const disabled = (el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true";
+      if (disabled && !params.beforeDisabled) {
+        return "now disabled";
+      }
+    }
+  }
+
+  try {
+    const openDialog = doc.querySelector("dialog[open], [role='dialog']:not([aria-hidden='true'])");
+    if (openDialog) {
+      const title =
+        openDialog.getAttribute("aria-label") ||
+        openDialog.querySelector("h1, h2, h3, header")?.textContent?.trim().slice(0, 40) ||
+        "";
+      return `opened dialog ${title ? `"${title}"` : ""}`.trim();
+    }
+
+    const openMenu = doc.querySelector("[role='menu']:not([aria-hidden='true']), [role='listbox']:not([aria-hidden='true'])");
+    if (openMenu) {
+      const count = openMenu.querySelectorAll("[role='menuitem'], [role='option'], li").length;
+      return `opened menu with ${count} options`;
+    }
+
+    const alert = doc.querySelector("[role='alert']");
+    if (alert) {
+      const text = (alert.textContent ?? "").trim().slice(0, 50);
+      if (text) {
+        return `alert: "${text}"`;
+      }
+    }
+  } catch {
+    // best-effort DOM probe
+  }
+
+  return "";
+}
+
 export interface ElementValue {
   value: string;
   length: number;

@@ -242,6 +242,8 @@ export interface ActionCoordinates {
 export interface ActionClickParams {
   tabId?: number;
   id?: number;
+  selector?: string;
+  text?: string;
   at?: ActionCoordinates;
   doubleClick?: boolean;
   snap?: boolean;
@@ -255,6 +257,7 @@ export interface ActionClickResult {
   coordinates?: ActionCoordinates;
   landedOn?: string;
   urlChanged?: boolean;
+  consequence?: string;
   durationMs: number;
   dispatchMs?: number;
   settleMs?: number;

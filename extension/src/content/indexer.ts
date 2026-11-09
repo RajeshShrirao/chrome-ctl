@@ -9,9 +9,11 @@ import {
   buildMetricsPayload,
   buildStateEntries,
   buildTargetPayload,
+  checkConsequence,
   elementAtPoint,
   focusIndexedElement,
   readIndexedValue,
+  resolveTargetByQuery,
   waitForContent,
 } from "./interact.ts";
 import {
@@ -99,6 +101,7 @@ const REQUEST_TYPES = new Set([
   "describe",
   "resolve",
   "formstate",
+  "consequence",
 ]);
 
 function isContentRequest(value: unknown): value is ContentRequest {
@@ -225,7 +228,11 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
     case "target": {
       assertDoc(request.expectedDocId);
       const state = docState();
-      const target = buildTargetPayload(document, scope.__chromeCtlIndex, request.id);
+      const target = resolveTargetByQuery(document, scope.__chromeCtlIndex, {
+        id: request.id,
+        selector: request.selector,
+        text: request.text,
+      });
       return {
         ok: true,
         type: "target",
@@ -313,6 +320,20 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
         type: "formstate",
         controls: extractFormState(document),
       };
+    case "consequence": {
+      const consequence = checkConsequence(document, scope.__chromeCtlIndex, {
+        id: request.id,
+        initialUrl: request.initialUrl,
+        beforeChecked: request.beforeChecked,
+        beforeValue: request.beforeValue,
+        beforeDisabled: request.beforeDisabled,
+      });
+      return {
+        ok: true,
+        type: "consequence",
+        consequence: consequence || undefined,
+      };
+    }
     default:
       return { ok: false, error: `unsupported request type` };
   }
