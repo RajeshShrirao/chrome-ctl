@@ -114,18 +114,18 @@ test("a navigation restarts the quiet window", () => {
 });
 
 test("inflightExcludingLongPoll ignores pending requests older than longPollMs", () => {
-  assert.equal(DEFAULT_LONG_POLL_MS, 10_000);
+  assert.equal(DEFAULT_LONG_POLL_MS, 2_000);
   const log = new NetLog();
   log.requestStart("r1", "https://example.test/stream", "GET", "Fetch", 1_000);
-  log.requestStart("r2", "https://example.test/recent", "GET", "Fetch", 11_500);
+  log.requestStart("r2", "https://example.test/recent", "GET", "Fetch", 3_500);
 
   assert.equal(log.inflight, 2);
-  // At now = 12_000: r1 started 11_000ms ago (> 10_000ms), r2 started 500ms ago (< 10_000ms)
-  assert.equal(log.inflightExcludingLongPoll(12_000, 10_000), 1);
+  // At now = 4_000: r1 started 3_000ms ago (> 2_000ms), r2 started 500ms ago (< 2_000ms)
+  assert.equal(log.inflightExcludingLongPoll(4_000, 2_000), 1);
 
-  // At now = 22_000: both are older than 10_000ms
-  assert.equal(log.inflightExcludingLongPoll(22_000, 10_000), 0);
+  // At now = 6_000: both are older than 2_000ms
+  assert.equal(log.inflightExcludingLongPoll(6_000, 2_000), 0);
 
-  // Custom longPollMs = 15_000ms: at 12_000, r1 is 11s old (< 15s)
-  assert.equal(log.inflightExcludingLongPoll(12_000, 15_000), 2);
+  // Custom longPollMs = 5_000ms: at 4_000, r1 is 3s old (< 5s)
+  assert.equal(log.inflightExcludingLongPoll(4_000, 5_000), 2);
 });

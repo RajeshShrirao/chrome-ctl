@@ -10,7 +10,7 @@ import type { NetEntry } from "../shared/protocol.js";
 
 export const MAX_NET_ENTRIES = 200;
 export const DEFAULT_QUIET_MS = 500;
-export const DEFAULT_LONG_POLL_MS = 10_000;
+export const DEFAULT_LONG_POLL_MS = 2_000;
 const PERSIST_THROTTLE_MS = 250;
 const STORAGE_PREFIX = "netlog:";
 const IGNORED_TYPES = new Set(["websocket", "eventsource"]);
