@@ -173,8 +173,44 @@ function renderInline(node: Node, doc: Document): string {
       const text = finishInline(el.textContent ?? "");
       return text ? `\`${text}\`` : "";
     }
-    default:
+    case "input": {
+      const type = (el.getAttribute("type") ?? "text").toLowerCase();
+      const inputEl = el as HTMLInputElement;
+      if (type === "radio") {
+        return inputEl.checked ? "(•) " : "( ) ";
+      }
+      if (type === "checkbox") {
+        return inputEl.checked ? "[x] " : "[ ] ";
+      }
+      if (type === "hidden") {
+        return "";
+      }
+      if (inputEl.value) {
+        return `[${inputEl.value}]`;
+      }
+      return "";
+    }
+    case "select": {
+      const selectEl = el as HTMLSelectElement;
+      const selected = selectEl.options?.[selectEl.selectedIndex];
+      return selected ? `[${selected.text || selected.value}]` : "";
+    }
+    case "textarea": {
+      const ta = el as HTMLTextAreaElement;
+      return ta.value ? `[${ta.value}]` : "";
+    }
+    default: {
+      const role = (el.getAttribute("role") ?? "").toLowerCase();
+      if (role === "radio") {
+        const checked = el.getAttribute("aria-checked") === "true";
+        return (checked ? "(•) " : "( ) ") + inlineChildren(el, doc);
+      }
+      if (role === "checkbox") {
+        const checked = el.getAttribute("aria-checked") === "true";
+        return (checked ? "[x] " : "[ ] ") + inlineChildren(el, doc);
+      }
       return inlineChildren(el, doc);
+    }
   }
 }
 
@@ -304,7 +340,7 @@ function collectIframes(
   }
   const elements = Array.from(root.querySelectorAll("*"));
   if ((root as Node).nodeType === 1 && (root as Element).tagName.toLowerCase() === "iframe") {
-    elements.unshift(root);
+    elements.unshift(root as Element);
   }
   for (const el of elements) {
     let shadow: ShadowRoot | null = null;

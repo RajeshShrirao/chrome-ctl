@@ -1,4 +1,5 @@
 import type {
+  FormControlState,
   MacroTarget,
   PageResolveResult,
   ReadLink,
@@ -20,6 +21,7 @@ export interface ContentSnapRequest {
   all: boolean;
   formsOnly: boolean;
   deep?: boolean;
+  frames?: boolean;
   maxElements?: number;
 }
 
@@ -31,6 +33,7 @@ export interface ContentReadRequest {
   mode?: "markdown" | "tables" | "links";
   maxTables?: number;
   maxLinks?: number;
+  forms?: boolean;
   expectedDocId?: string;
 }
 
@@ -80,6 +83,7 @@ export interface ContentAttrRequest {
   type: "attr";
   id?: number;
   selector?: string;
+  frame?: string;
   expectedDocId?: string;
 }
 
@@ -109,6 +113,12 @@ export interface ContentResolveRequest {
   timeoutMs: number;
 }
 
+/** Extract state of all form controls across same-origin frames and shadow roots. */
+export interface ContentFormStateRequest {
+  channel: typeof CONTENT_CHANNEL;
+  type: "formstate";
+}
+
 export type ContentRequest =
   | ContentPingRequest
   | ContentSnapRequest
@@ -122,7 +132,8 @@ export type ContentRequest =
   | ContentAttrRequest
   | ContentWaitRequest
   | ContentDescribeRequest
-  | ContentResolveRequest;
+  | ContentResolveRequest
+  | ContentFormStateRequest;
 
 export interface SnapPayload {
   docId: string;
@@ -131,6 +142,7 @@ export interface SnapPayload {
   viewport: ViewportInfo;
   elements: SnapElement[];
   lines: string[];
+  framesSummary?: string;
 }
 
 /**
@@ -228,6 +240,7 @@ export type ContentResponse =
   | { ok: true; type: "wait"; wait: ContentWaitPayload }
   | { ok: true; type: "describe"; target: MacroTarget }
   | { ok: true; type: "resolve"; resolved: PageResolveResult }
+  | { ok: true; type: "formstate"; controls: FormControlState[] }
   | { ok: false; error: string };
 
 export const READ_MAX_CHARS = 100_000;

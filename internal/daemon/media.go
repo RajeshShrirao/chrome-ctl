@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -103,7 +104,7 @@ func (d *daemon) handleMediaShot(ctx context.Context, req protocol.Request) prot
 		}
 	}
 
-	pngBytes, capture, rpcErr := d.capturePNG(ctx, params.Som, nil)
+	pngBytes, capture, rpcErr := d.capturePNG(ctx, params.Som, nil, params.Full)
 	if rpcErr != nil {
 		return responseWithError(req.ID, rpcErr)
 	}
@@ -112,6 +113,7 @@ func (d *daemon) handleMediaShot(ctx context.Context, req protocol.Request) prot
 		MaxWidth: params.MaxWidth,
 		Quality:  params.Quality,
 		Gray:     params.Gray,
+		Exact:    params.Exact,
 		Badges:   elementsToBadges(capture.Elements),
 	})
 	if err != nil {
@@ -126,14 +128,43 @@ func (d *daemon) handleMediaShot(ctx context.Context, req protocol.Request) prot
 		return protocol.Failure(req.ID, protocol.ErrInternal, "write screenshot: "+err.Error())
 	}
 
+	captureTime := time.Now().Format("15:04:05")
+	h := sha256.Sum256(result.Data)
+	hash := fmt.Sprintf("%x", h)[:8]
+
+	d.lastShotMu.Lock()
+	identical := d.lastShotHash != "" && d.lastShotHash == hash
+	d.lastShotHash = hash
+	d.lastShotMu.Unlock()
+
+	meta := map[string]any{
+		"path":           path,
+		"viewportWidth":  capture.ViewportWidth,
+		"viewportHeight": capture.ViewportHeight,
+		"imageWidth":     result.Width,
+		"imageHeight":    result.Height,
+		"scale":          result.Scale,
+		"hash":           hash,
+		"captureTime":    captureTime,
+	}
+	if metaBytes, err := json.Marshal(meta); err == nil {
+		_ = writeMediaFile(path+".meta.json", metaBytes)
+	}
+
 	return protocol.Success(req.ID, protocol.MediaShotResult{
-		Path:          path,
-		FileSizeBytes: int64(len(result.Data)),
-		Width:         result.Width,
-		Height:        result.Height,
-		SomBadgeCount: result.BadgeCount,
-		Gray:          params.Gray,
-		CapturePath:   capture.CapturePath,
+		Path:             path,
+		FileSizeBytes:    int64(len(result.Data)),
+		Width:            result.Width,
+		Height:           result.Height,
+		SomBadgeCount:    result.BadgeCount,
+		Gray:             params.Gray,
+		CapturePath:      capture.CapturePath,
+		ViewportWidth:    capture.ViewportWidth,
+		ViewportHeight:   capture.ViewportHeight,
+		Scale:            result.Scale,
+		CaptureTime:      captureTime,
+		Hash:             hash,
+		IdenticalWarning: identical,
 	})
 }
 
@@ -173,7 +204,7 @@ func (d *daemon) handleMediaRecStart(_ context.Context, req protocol.Request) pr
 	done := rec.done
 	rec.mu.Unlock()
 
-	pngBytes, capture, rpcErr := d.capturePNG(recCtx, false, nil)
+	pngBytes, capture, rpcErr := d.capturePNG(recCtx, false, nil, false)
 	if rpcErr != nil {
 		rec.mu.Lock()
 		rec.active = false
@@ -235,7 +266,7 @@ func (d *daemon) recordLoop(ctx context.Context, rec *recorder, done chan struct
 		}
 
 		captureCtx, cancel := context.WithTimeout(ctx, mediaCaptureTimeout)
-		pngBytes, _, rpcErr := d.capturePNG(captureCtx, false, target)
+		pngBytes, _, rpcErr := d.capturePNG(captureCtx, false, target, false)
 		cancel()
 		if rpcErr != nil {
 			if ctx.Err() != nil {
@@ -373,8 +404,8 @@ func (d *daemon) stopRecorder() (frames []recordedFrame, fps int, lastErr error,
 	return frames, fps, lastErr, true
 }
 
-func (d *daemon) capturePNG(ctx context.Context, includeElements bool, tabID *int) ([]byte, protocol.MediaCaptureResult, *protocol.RPCError) {
-	raw, err := json.Marshal(protocol.MediaCaptureParams{TabID: tabID, IncludeElements: includeElements})
+func (d *daemon) capturePNG(ctx context.Context, includeElements bool, tabID *int, full bool) ([]byte, protocol.MediaCaptureResult, *protocol.RPCError) {
+	raw, err := json.Marshal(protocol.MediaCaptureParams{TabID: tabID, IncludeElements: includeElements, Full: full})
 	if err != nil {
 		return nil, protocol.MediaCaptureResult{}, &protocol.RPCError{
 			Code:    protocol.ErrInternal,

@@ -149,7 +149,7 @@ Trigger the hand-back when you **observe** any of these:
 
 - A `type=password` field, or a password/passphrase/API-key/card-number/one-time-code input.
 - `SSO aborted: password required; complete sign-in manually`, or a CAPTCHA, passkey, 2FA, or wallet screen.
-- A control labelled Delete, Purchase, Pay, Post, Send, Grant access, or anything that spends money or is irreversible.
+- A control labelled Delete, Purchase, Pay, Post, Send, Grant access, submitting a graded assessment / test / quiz, or anything that spends money or is irreversible.
 - A download control — this build cannot verify a download landed.
 - Page data about to leave to a third party, or a task that would exfiltrate content beyond its scope.
 
@@ -213,15 +213,20 @@ chrome-ctl window close 12                  # tidy up a window you created
 
 ```bash
 chrome-ctl snap                             # interactive elements in view
+chrome-ctl snap --frames                    # traverse all frames regardless of size/visibility
 chrome-ctl snap --forms                     # inputs, selects, textareas, submits
 chrome-ctl snap --deep                      # cursor:pointer controls, bare rows/cells
 chrome-ctl snap --all                       # include off-screen elements
 chrome-ctl snap --max-elements 800          # raise the 400 cap
 chrome-ctl read                             # page markdown (the default for prose)
+chrome-ctl read --forms                     # markdown with (•)/( ), [x]/[ ] form states
 chrome-ctl read --tables                    # "# table 1: caption" then TSV
 chrome-ctl read --links                     # text<TAB>absolute href, deduped
 chrome-ctl read --json                      # structured, no markdown mixed in
 chrome-ctl read 12 --tables                 # scope to an element or snapshot ID
+chrome-ctl formstate                        # every control across frames with frame paths
+chrome-ctl formstate --frame f2             # filter controls inside frame f2
+chrome-ctl scroll --to "div#question5"      # jump directly to element
 chrome-ctl net --errors --since 5m --limit 50
 ```
 
@@ -229,15 +234,27 @@ chrome-ctl net --errors --since 5m --limit 50
 - `net` only knows what happened while the debugger was attached — roughly during actions and `wait --network`. An empty log with a note means nothing was observed, not that the page made no requests. If DevTools owns the tab, the log cannot be collected.
 - Waits: `wait 2500`, `wait 3000-7000` (jitter), `wait "#results"` (selector), `wait idle` (DOM quiet + document complete, **not** network), `wait --network` (nothing in flight and no new request for `--quiet-ms`, default 500), `wait --for-text "…"` with `--ignore-case`, and `--timeout` in ms (default 15000). Combine `--network --for-text` under one deadline.
 - SPAs render a shell, go quiet, then fetch for seconds more. `wait idle` alone routinely returns too early — use `--network` or `--for-text` for fetched content. Long-polling, WebSockets, and streams may never settle: prefer `--for-text` with an explicit `--timeout`.
-- `--network` needs the debugger; if DevTools is open on the tab, it reports that network events could not be enabled rather than pretending the page was quiet.
+- `--network` needs the debugger; if DevTools is open on the tab, it reports that network events could not be enabled rather than pretending the page was quiet. If `wait --network` reports quiet after 0ms (0 requests observed), this indicates no network activity was observed, not proof of quiet — a `WARN` is emitted. Verify state.
 
 ## When the snapshot can't see it
 
 - `collapsed`/`expanded` come from `aria-expanded` or a `<details>` summary. A closed combobox is visible; its options are not. Click it, then `snap`.
 - Hidden file inputs are emitted at their visible `<label>` with state `file`. Use `upload <id> <path>`; never click the hidden input.
 - Keyboard fallback reaches what pointer heuristics miss: `press Tab` until the control is focused, then `press Enter` or `press Space`.
-- `clickat X,Y` clicks an exact viewport point in **CSS pixels as `snap` prints them** — not screenshot pixels, because `shot` resizes. Measure from `snap` or `describe`, never from the image.
-- Cross-origin iframes and closed shadow roots are invisible to `snap`. Open shadow roots and same-origin iframes are automatically pierced by both `snap` and `read`.
+- **Frames**: If a page looks nearly empty, assume a frame. Same-origin frames are readable by `read`; snap/click traversal may miss them if zero-sized or deeply nested. Use `snap --frames` to force-traverse all same-origin frames. Elements inside frames are tagged with their frame (e.g. `[41] (f2)`). Cross-origin iframes and closed shadow roots remain invisible to script inspection.
+- **Frame-scoped clicks recipe**: If `click <id>` refuses an element in a nested frame (e.g. hit-testing reports `frame-clipped` or container obscuring), accumulate `getBoundingClientRect` offsets down the frame chain with `eval`, then `clickat X,Y` (or use `clickat --from-shot <path>` with image coordinates).
+  ```bash
+  # Accepts both comma and space formats:
+  chrome-ctl clickat 65,238
+  chrome-ctl clickat 65 238
+  # Or click directly from screenshot image coordinates:
+  chrome-ctl clickat --from-shot /tmp/view.webp 100 200
+  ```
+- **JS widgets & synthetic clicks**: On JS widgets (e.g. D2L/Brightspace LMS, rich dropdowns), synthetic `.click()` via `eval` often skips change/save event handlers. Prefer `click <id>` or `clickat` over `eval element.click()`.
+- **Form verification before submit**:
+  Always verify drafted choices before submitting any form or assessment:
+  - `read --forms` renders options with `(•) CPU`, `( ) GPU`, `[x] Oval`, `[ ] Rect`.
+  - `chrome-ctl formstate` lists all controls across all same-origin frames with `[frame]`, `checked`, `value`, `disabled`, `name`, `id`, `label`.
 - Nested iframes: Coordinates are automatically translated across same-origin iframe boundaries for clicking.
 - Long-polling SPAs: If a page has perpetual network activity (e.g. background chat or polling), `wait --network` automatically discounts requests pending longer than 10s so it does not hang indefinitely. You can customize this or rely on `wait --for-text`.
 
@@ -245,14 +262,19 @@ chrome-ctl net --errors --since 5m --limit 50
 
 ```bash
 chrome-ctl describe 12
-chrome-ctl describe "css=div[role=combobox]"
+chrome-ctl describe 12 --frame f2
+chrome-ctl describe "css=div[role=combobox]" --frame f1
 chrome-ctl href 12                          # resolved absolute URL only
+chrome-ctl href 12 --frame f2
+chrome-ctl click 12 --timeout 10000         # timing breakdown: dispatch + DOM settle
+chrome-ctl scroll down 0.75                 # 5s timeout; targets innermost scrollable frame
+chrome-ctl scroll --to "div.quiz-summary"   # scroll directly to selector
 chrome-ctl eval 'document.title'
 chrome-ctl eval --raw 'location.href'
 chrome-ctl eval --await 'fetch("/api/status").then(r => r.json())' --timeout 8000
 ```
 
-- `describe` prints `<tag> "name" @x,y WxH` plus role, type, id, name, `href`/`src`, value, state, selector match count, and every attribute.
+- `describe` prints `<tag> "name" @x,y WxH` plus role, type, id, name, `href`/`src`, value, state, selector match count, and every attribute. Accepts `--frame <fN|name|selector>`.
 - `eval` returns JSON-serialisable values; `--raw` unquotes a string, `--await` waits for a promise. Output is truncated at 100,000 characters and the expression is logged to the extension console. It runs over CDP, so it works even when page CSP blocks injected scripts — it is instant, skips humanisation, and can read anything the page can read. Never use it to bypass a confirmation or to scrape more than the task needs.
 - Disable it entirely with `chrome-ctl daemon --stop && chrome-ctl daemon --start --no-eval`; the gate survives the daemon's background restart, and `feature disabled` means exactly that.
 - `url`, `describe`, `clickat`, and `eval` are deliberate escapes, not the default path.
@@ -320,6 +342,8 @@ chrome-ctl macro run directory_search --vars '{"search_term":"Design Studios"}'
 
 ```bash
 chrome-ctl shot                              # WebP into ~/.chrome-ctl/media
+chrome-ctl shot --exact -o /tmp/view.webp    # full resolution, no downscaling
+chrome-ctl shot --full -o /tmp/full.webp     # capture full scrollable page
 chrome-ctl shot --som -o /tmp/view.webp      # IDs drawn on interactive elements
 chrome-ctl shot --gray -o /tmp/verify.webp   # grayscale, for text checks
 chrome-ctl rec start --fps 2                 # 1-2 fps
@@ -327,7 +351,9 @@ chrome-ctl rec stop --grid -o /tmp/boards.webp   # 3x4 contact sheet, no ffmpeg
 chrome-ctl rec stop -o /tmp/clip.webm            # WebM, requires ffmpeg
 ```
 
-Storyboards are one WebP and the lowest-token way to review a sequence. WebM needs `ffmpeg` on `PATH` (or `CHROME_CTL_FFMPEG`); if it is missing, use `--grid`. Without `-o`, artifacts land in `~/.chrome-ctl/media`. If `captureVisibleTab` cannot grab the tab — minimized window, heavy canvas, another debugger owns the tab — `shot` retries through the debugger and appends `via CDP fallback (captureVisibleTab failed)`; if both fail, the error names both causes. Restore the window or ask the user. `rec` state does not survive a daemon restart; re-`rec start`.
+- Each screenshot prints its capture timestamp and image hash: `OK: saved /tmp/view.webp (1024x628, 41 KB, hash a1b2c3d4 @ 15:04:05, viewport 1414x867, image 1024x628, scale 0.724)`. A sidecar `.meta.json` records dimensions for `clickat --from-shot`.
+- If the image hash is identical to the previous capture right after a mutation, `shot` warns: `WARN: identical to previous capture; content may be composited in a subframe`.
+- Storyboards are one WebP and the lowest-token way to review a sequence. WebM needs `ffmpeg` on `PATH` (or `CHROME_CTL_FFMPEG`); if it is missing, use `--grid`. Without `-o`, artifacts land in `~/.chrome-ctl/media`. If `captureVisibleTab` cannot grab the tab — minimized window, heavy canvas, another debugger owns the tab — `shot` retries through the debugger and appends `via CDP fallback (captureVisibleTab failed)`; if both fail, the error names both causes. Restore the window or ask the user. `rec` state does not survive a daemon restart; re-`rec start`.
 
 ## Google SSO
 

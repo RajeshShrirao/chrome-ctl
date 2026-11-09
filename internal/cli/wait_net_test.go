@@ -42,6 +42,21 @@ func TestWaitCommandNetworkQuiet(t *testing.T) {
 	}
 }
 
+func TestWaitCommandNetworkZeroObservationWarning(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	srv := fakePhase2Server(t, token, phase2Result(`{"waitedMs":0,"matched":true,"requests":0}`), nil)
+	defer srv.Close()
+	t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+	out, err := executePhase2(t, "wait", "--network")
+	if err != nil {
+		t.Fatalf("wait --network error = %v", err)
+	}
+	if want := "WARN: network quiet after 0ms (0 requests observed); no traffic was seen. Verify state.\n"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
 func TestWaitCommandNetworkBusyIsAWarning(t *testing.T) {
 	_, token := setupStatusEnv(t)
 	srv := fakePhase2Server(t, token, phase2Result(`{"waitedMs":15000,"matched":false,"reason":"timeout","inflight":3,"requests":9}`), nil)

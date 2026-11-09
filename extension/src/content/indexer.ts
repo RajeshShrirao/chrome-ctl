@@ -3,6 +3,7 @@ import type { ContentRequest, ContentResponse, SnapPayload } from "../shared/con
 import type { MacroTarget } from "../shared/protocol.js";
 import { buildDescriptor, resolveTarget } from "./describe.ts";
 import { snapshot } from "./dom.ts";
+import { extractFormState } from "./forms.ts";
 import {
   buildAttrPayload,
   buildMetricsPayload,
@@ -97,6 +98,7 @@ const REQUEST_TYPES = new Set([
   "wait",
   "describe",
   "resolve",
+  "formstate",
 ]);
 
 function isContentRequest(value: unknown): value is ContentRequest {
@@ -124,6 +126,7 @@ function describeSnap(request: ContentRequest & { type: "snap" }): SnapPayload {
     all: request.all === true,
     formsOnly: request.formsOnly === true,
     deep: request.deep === true,
+    frames: request.frames === true,
     maxElements: request.maxElements,
     startId: state.nextId,
   });
@@ -149,6 +152,7 @@ function describeSnap(request: ContentRequest & { type: "snap" }): SnapPayload {
     viewport: result.viewport,
     elements: result.elements,
     lines: result.lines,
+    framesSummary: result.framesSummary,
   };
 }
 
@@ -269,6 +273,7 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
       const attr = buildAttrPayload(document, scope.__chromeCtlIndex, {
         id: request.id,
         selector: request.selector,
+        frame: request.frame,
       });
       return {
         ok: true,
@@ -302,6 +307,12 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
       );
       return { ok: true, type: "resolve", resolved };
     }
+    case "formstate":
+      return {
+        ok: true,
+        type: "formstate",
+        controls: extractFormState(document),
+      };
     default:
       return { ok: false, error: `unsupported request type` };
   }

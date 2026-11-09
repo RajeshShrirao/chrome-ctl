@@ -18,6 +18,7 @@ const (
 type readFlags struct {
 	tables    bool
 	links     bool
+	forms     bool
 	asJSON    bool
 	maxTables int
 	maxLinks  int
@@ -35,6 +36,7 @@ func newReadCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&flags.tables, "tables", false, "Emit tables as TSV instead of markdown")
 	cmd.Flags().BoolVar(&flags.links, "links", false, "Emit visible links as text<TAB>href")
+	cmd.Flags().BoolVar(&flags.forms, "forms", false, "Annotate form controls and selection states (e.g. (•) CPU, [x] Oval)")
 	cmd.Flags().BoolVar(&flags.asJSON, "json", false, "Emit the structured result as JSON")
 	cmd.Flags().IntVar(&flags.maxTables, "max-tables", readDefaultMaxTables, "Maximum tables in --tables mode")
 	cmd.Flags().IntVar(&flags.maxLinks, "max-links", readDefaultMaxLinks, "Maximum links in --links mode")
@@ -61,6 +63,7 @@ func runRead(cmd *cobra.Command, args []string, flags readFlags) error {
 		params.Mode = "links"
 		params.MaxLinks = flags.maxLinks
 	}
+	params.Forms = flags.forms
 
 	var result protocol.PageReadResult
 	if err := callRPC(cmd, protocol.MethodPageRead, params, &result); err != nil {

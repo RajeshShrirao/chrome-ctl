@@ -37,6 +37,8 @@ type ImageOptions struct {
 	Quality int
 	// Gray converts the finished artifact to grayscale.
 	Gray bool
+	// Exact disables downscaling and keeps original capture dimensions.
+	Exact bool
 	// Badges are Set-of-Mark boxes in CSS pixels relative to the viewport.
 	Badges []Badge
 }
@@ -46,6 +48,7 @@ type ImageResult struct {
 	Data       []byte
 	Width      int
 	Height     int
+	Scale      float64
 	BadgeCount int
 }
 
@@ -65,13 +68,15 @@ func ProcessPNG(pngBytes []byte, viewportWidth int, opts ImageOptions) (ImageRes
 		return ImageResult{}, errors.New("PNG has empty bounds")
 	}
 
-	maxWidth := normalizeMaxWidth(opts.MaxWidth)
 	finalW, finalH := srcW, srcH
-	if srcW > maxWidth {
-		finalW = maxWidth
-		finalH = int(math.Round(float64(srcH) * float64(maxWidth) / float64(srcW)))
-		if finalH < 1 {
-			finalH = 1
+	if !opts.Exact {
+		maxWidth := normalizeMaxWidth(opts.MaxWidth)
+		if srcW > maxWidth {
+			finalW = maxWidth
+			finalH = int(math.Round(float64(srcH) * float64(maxWidth) / float64(srcW)))
+			if finalH < 1 {
+				finalH = 1
+			}
 		}
 	}
 
@@ -101,6 +106,7 @@ func ProcessPNG(pngBytes []byte, viewportWidth int, opts ImageOptions) (ImageRes
 		Data:       buf.Bytes(),
 		Width:      finalW,
 		Height:     finalH,
+		Scale:      scale,
 		BadgeCount: badgeCount,
 	}, nil
 }

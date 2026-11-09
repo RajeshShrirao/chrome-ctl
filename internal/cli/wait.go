@@ -153,7 +153,11 @@ func runConditionWait(cmd *cobra.Command, flags waitFlags) error {
 		case flags.network && flags.text != "":
 			fmt.Fprintf(out, "OK: network quiet and text %q appeared after %s (%d requests)\n", flags.text, duration, result.Requests)
 		case flags.network:
-			fmt.Fprintf(out, "OK: network quiet after %s (%d requests)\n", duration, result.Requests)
+			if result.WaitedMs == 0 && result.Requests == 0 {
+				fmt.Fprintln(out, "WARN: network quiet after 0ms (0 requests observed); no traffic was seen. Verify state.")
+			} else {
+				fmt.Fprintf(out, "OK: network quiet after %s (%d requests)\n", duration, result.Requests)
+			}
 		default:
 			fmt.Fprintf(out, "OK: text %q appeared after %s\n", flags.text, duration)
 		}

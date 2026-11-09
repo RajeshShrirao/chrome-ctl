@@ -27,6 +27,7 @@ var goMethods = []string{
 	MethodPageEval,
 	MethodPageAttr,
 	MethodPageNet,
+	MethodPageFormState,
 	MethodActionClick,
 	MethodActionType,
 	MethodActionPress,

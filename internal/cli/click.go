@@ -14,6 +14,7 @@ const clickTimeout = 70 * time.Second
 
 func newClickCmd() *cobra.Command {
 	var snap, double bool
+	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "click <id>",
 		Short: "Click an indexed element",
@@ -24,9 +25,14 @@ func newClickCmd() *cobra.Command {
 				return err
 			}
 
-			params := protocol.ActionClickParams{ID: id, DoubleClick: double, Snap: snap}
+			params := protocol.ActionClickParams{
+				ID:          id,
+				DoubleClick: double,
+				Snap:        snap,
+				TimeoutMs:   int(timeout.Milliseconds()),
+			}
 			var result protocol.ActionClickResult
-			if err := callRPCWithTimeout(cmd, protocol.MethodActionClick, params, &result, clickTimeout); err != nil {
+			if err := callRPCWithTimeout(cmd, protocol.MethodActionClick, params, &result, timeout); err != nil {
 				return err
 			}
 			fmt.Fprint(cmd.OutOrStdout(), formatClick(result, double))
@@ -35,6 +41,7 @@ func newClickCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&snap, "snap", false, "Include a page snapshot after clicking")
 	cmd.Flags().BoolVar(&double, "double", false, "Double-click instead of a single click")
+	cmd.Flags().DurationVar(&timeout, "timeout", clickTimeout, "Timeout for the click operation")
 	return cmd
 }
 
@@ -53,6 +60,15 @@ func formatClick(result protocol.ActionClickResult, double bool) string {
 		action = "double-clicked"
 	}
 
+	timing := fmt.Sprintf("%.2fs", float64(result.DurationMs)/1000)
+	if result.DispatchMs > 0 || result.SettleMs > 0 {
+		timing = fmt.Sprintf("%.2fs: dispatch %.2fs, DOM settle %.2fs",
+			float64(result.DurationMs)/1000,
+			float64(result.DispatchMs)/1000,
+			float64(result.SettleMs)/1000,
+		)
+	}
+
 	var line string
 	switch {
 	case result.Target != nil:
@@ -60,24 +76,24 @@ func formatClick(result protocol.ActionClickResult, double bool) string {
 		if result.Coordinates != nil {
 			coords = *result.Coordinates
 		}
-		line = fmt.Sprintf("OK: %s [%d] <%s> %q @%d,%d (%.2fs)",
+		line = fmt.Sprintf("OK: %s [%d] <%s> %q @%d,%d (%s)",
 			action,
 			result.Target.ID,
 			result.Target.Tag,
 			result.Target.Label,
 			coords.X,
 			coords.Y,
-			float64(result.DurationMs)/1000,
+			timing,
 		)
 	case result.Coordinates != nil:
-		line = fmt.Sprintf("OK: %s @%d,%d (%.2fs)",
+		line = fmt.Sprintf("OK: %s @%d,%d (%s)",
 			action,
 			result.Coordinates.X,
 			result.Coordinates.Y,
-			float64(result.DurationMs)/1000,
+			timing,
 		)
 	default:
-		line = fmt.Sprintf("OK: %s (%.2fs)", action, float64(result.DurationMs)/1000)
+		line = fmt.Sprintf("OK: %s (%s)", action, timing)
 	}
 	if result.LandedOn != "" {
 		line += fmt.Sprintf(" Landed on %s.", result.LandedOn)

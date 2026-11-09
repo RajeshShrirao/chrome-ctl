@@ -60,6 +60,7 @@ func NewRoot() *cobra.Command {
 		newURLCmd(),
 		newSSOCmd(),
 		newMacroCmd(),
+		newFormStateCmd(),
 	)
 	return root
 }

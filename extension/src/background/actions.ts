@@ -61,8 +61,9 @@ export interface TypeOptions {
 }
 
 export interface ScrollOptions {
-  direction: "down" | "up";
-  amount: number;
+  direction?: "down" | "up";
+  amount?: number;
+  toSelector?: string;
   sendContent: ContentSender;
 }
 
@@ -574,16 +575,59 @@ export async function scroll(
   options: ScrollOptions,
 ): Promise<ActionScrollResult> {
   return run(async () => {
+    if (options.toSelector) {
+      const escaped = JSON.stringify(options.toSelector);
+      const evalResult = await debuggerController.send<EvaluateResult>(
+        tabId,
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            function findDeep(root, sel) {
+              try {
+                const el = root.querySelector(sel);
+                if (el) return el;
+              } catch {}
+              for (const child of Array.from(root.querySelectorAll('*'))) {
+                if (child.shadowRoot) {
+                  const found = findDeep(child.shadowRoot, sel);
+                  if (found) return found;
+                }
+                if (child.tagName === 'IFRAME') {
+                  try {
+                    if (child.contentDocument) {
+                      const found = findDeep(child.contentDocument, sel);
+                      if (found) return found;
+                    }
+                  } catch {}
+                }
+              }
+              return null;
+            }
+            const target = findDeep(document, ${escaped});
+            if (!target) return { found: false };
+            target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+            return { found: true };
+          })()`,
+          returnByValue: true,
+        },
+      );
+      const value = evalResult?.result?.value as { found?: boolean } | undefined;
+      if (!value || !value.found) {
+        throw new RpcFault(ErrorCodes.elementNotFound, `element matching ${options.toSelector} not found`);
+      }
+      const metrics = await requestMetrics(options.sendContent, tabId);
+      return {
+        scrolledPixels: 0,
+        newScrollY: Math.round(metrics.scrollY),
+        viewportPercent: metrics.percent,
+        target: options.toSelector,
+      };
+    }
+
     if (options.direction !== "down" && options.direction !== "up") {
       throw new RpcFault(ErrorCodes.internal, 'direction must be "down" or "up"');
     }
-    if (
-      typeof options.amount !== "number" ||
-      !Number.isFinite(options.amount) ||
-      options.amount <= 0
-    ) {
-      throw new RpcFault(ErrorCodes.internal, "amount must be greater than 0");
-    }
+    const amount = typeof options.amount === "number" && options.amount > 0 ? options.amount : 0.8;
 
     const before = await requestMetrics(options.sendContent, tabId);
 
@@ -609,7 +653,7 @@ export async function scroll(
     }
 
     const distance =
-      Math.round(options.amount * before.viewportHeight) *
+      Math.round(amount * before.viewportHeight) *
       (options.direction === "up" ? -1 : 1);
     const plan = planScroll(distance);
 
@@ -631,9 +675,45 @@ export async function scroll(
     await sleep(250);
 
     const after = await requestMetrics(options.sendContent, tabId);
+    const scrolledPx = Math.round(Math.abs(after.scrollY - before.scrollY));
+
+    // If top document didn't scroll, check if an inner frame or scrollable element was scrolled
+    if (scrolledPx === 0) {
+      const frameCheck = await debuggerController.send<EvaluateResult>(
+        tabId,
+        "Runtime.evaluate",
+        {
+          expression: `(() => {
+            const iframes = Array.from(document.querySelectorAll('iframe'));
+            for (let i = 0; i < iframes.length; i++) {
+              try {
+                const sub = iframes[i].contentDocument;
+                if (!sub) continue;
+                const win = sub.defaultView;
+                const sy = win ? win.scrollY : (sub.documentElement.scrollTop || sub.body.scrollTop);
+                if (sy > 0) {
+                  return { frameIndex: i + 1, scrollY: sy };
+                }
+              } catch {}
+            }
+            return null;
+          })()`,
+          returnByValue: true,
+        },
+      );
+      const val = frameCheck?.result?.value as { frameIndex?: number; scrollY?: number } | undefined;
+      if (val && val.frameIndex !== undefined) {
+        return {
+          scrolledPixels: Math.round(val.scrollY ?? 0),
+          newScrollY: Math.round(val.scrollY ?? 0),
+          viewportPercent: after.percent,
+          frame: String(val.frameIndex),
+        };
+      }
+    }
 
     return {
-      scrolledPixels: Math.round(Math.abs(after.scrollY - before.scrollY)),
+      scrolledPixels: scrolledPx,
       newScrollY: Math.round(after.scrollY),
       viewportPercent: after.percent,
     };
@@ -649,6 +729,7 @@ interface RemoteObject {
   type?: string;
   subtype?: string;
   objectId?: string;
+  value?: unknown;
 }
 
 interface EvaluateResult {

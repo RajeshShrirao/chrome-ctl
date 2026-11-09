@@ -14,6 +14,8 @@ export interface SnapOptions {
   formsOnly?: boolean;
   /** Include cursor-pointer controls and bare rows/cells (opt-in: snapshot explosion). */
   deep?: boolean;
+  /** Include elements inside frames regardless of frame size/visibility. */
+  frames?: boolean;
   /** Cap on emitted elements; defaults to MAX_SNAP_ELEMENTS. */
   maxElements?: number;
   /** First id to assign; lets the caller keep ids unique across snaps. */
@@ -91,6 +93,7 @@ export interface Snapshot {
   nextId: number;
   /** Visible candidates dropped because the element cap was reached. */
   omitted: number;
+  framesSummary?: string;
 }
 
 export const MAX_SNAP_ELEMENTS = 400;
@@ -372,13 +375,14 @@ export function formatLine(element: SnapElement, alwaysParens: boolean): string 
     : alwaysParens
       ? " ()"
       : "";
-  return `[${element.id}] <${tagToken}> "${escapedLabel}"${parens} @${element.x},${element.y}`;
+  const frameTag = element.frame ? ` (${element.frame})` : "";
+  return `[${element.id}]${frameTag} <${tagToken}> "${escapedLabel}"${parens} @${element.x},${element.y}`;
 }
 
-function describeElement(el: Element, id: number, geometry: Element = el): SnapElement {
+function describeElement(el: Element, id: number, geometry: Element = el, frame?: string): SnapElement {
   const rect = viewportRect(geometry);
   const ownerDoc = geometry.ownerDocument ?? el.ownerDocument;
-  return {
+  const result: SnapElement = {
     id,
     tag: el.tagName.toLowerCase(),
     type: typeToken(el),
@@ -390,6 +394,10 @@ function describeElement(el: Element, id: number, geometry: Element = el): SnapE
     w: Math.round(rect.width),
     h: Math.round(rect.height),
   };
+  if (frame) {
+    result.frame = frame;
+  }
+  return result;
 }
 
 type QueryRoot = Document | ShadowRoot;
@@ -402,15 +410,55 @@ function shadowRootOf(el: Element): ShadowRoot | null {
   }
 }
 
-/** Same-origin iframe document, or null for cross-origin/unloaded frames. */
-function frameDocumentOf(el: Element): Document | null {
-  if (el.tagName.toLowerCase() !== "iframe") {
-    return null;
+export interface FrameCollectorContext {
+  topDoc: Document;
+  frameMap: Map<Document, string>;
+  frameElements: Map<Element, string>;
+  totalFrames: number;
+  sameOriginTraversed: number;
+  crossOrigin: number;
+  skippedReasons: string[];
+}
+
+export function formatFramesSummary(ctx: FrameCollectorContext): string {
+  if (ctx.totalFrames === 0) {
+    return "";
+  }
+  const parts: string[] = [];
+  parts.push(`${ctx.sameOriginTraversed} same-origin traversed`);
+  if (ctx.crossOrigin > 0) {
+    parts.push(`${ctx.crossOrigin} cross-origin`);
+  }
+  const skippedMap = new Map<string, number>();
+  for (const reason of ctx.skippedReasons) {
+    if (reason !== "cross-origin") {
+      skippedMap.set(reason, (skippedMap.get(reason) ?? 0) + 1);
+    }
+  }
+  if (skippedMap.size > 0) {
+    const list: string[] = [];
+    for (const [reason, count] of skippedMap) {
+      list.push(count > 1 ? `${count} ${reason}` : reason);
+    }
+    parts.push(`skipped: ${list.join(", ")}`);
+  }
+  return `FRAMES: ${ctx.totalFrames} (${parts.join(", ")})`;
+}
+
+/** Same-origin iframe document and status. */
+function frameDocumentOf(el: Element): { doc: Document | null; status: "same-origin" | "cross-origin" | "not-loaded" } {
+  const tag = el.tagName.toLowerCase();
+  if (tag !== "iframe" && tag !== "frame") {
+    return { doc: null, status: "not-loaded" };
   }
   try {
-    return (el as HTMLIFrameElement).contentDocument ?? null;
+    const doc = (el as HTMLIFrameElement).contentDocument ?? null;
+    if (doc === null) {
+      return { doc: null, status: "not-loaded" };
+    }
+    return { doc, status: "same-origin" };
   } catch {
-    return null;
+    return { doc: null, status: "cross-origin" };
   }
 }
 
@@ -438,8 +486,10 @@ function collectCandidates(
   root: QueryRoot,
   out: Element[],
   seen: Set<Element>,
+  ctx: FrameCollectorContext,
   depth = 0,
   deep = false,
+  forceFrames = false,
 ): void {
   if (depth > 64) {
     return;
@@ -451,14 +501,47 @@ function collectCandidates(
     if (matchesCandidate(el, deep)) {
       seen.add(el);
       out.push(el);
+      if (el.ownerDocument !== ctx.topDoc) {
+        const frameTag = ctx.frameMap.get(el.ownerDocument);
+        if (frameTag) {
+          ctx.frameElements.set(el, frameTag);
+        }
+      }
     }
     const shadow = shadowRootOf(el);
     if (shadow) {
-      collectCandidates(shadow, out, seen, depth + 1, deep);
+      collectCandidates(shadow, out, seen, ctx, depth + 1, deep, forceFrames);
     }
-    const frameDoc = frameDocumentOf(el);
-    if (frameDoc && isFrameVisible(el)) {
-      collectCandidates(frameDoc, out, seen, depth + 1, deep);
+    const tag = el.tagName.toLowerCase();
+    if (tag === "iframe" || tag === "frame") {
+      ctx.totalFrames++;
+      const { doc: frameDoc, status } = frameDocumentOf(el);
+      if (status === "cross-origin") {
+        ctx.crossOrigin++;
+        ctx.skippedReasons.push("cross-origin");
+      } else if (status === "not-loaded" || !frameDoc) {
+        ctx.skippedReasons.push("not loaded");
+      } else {
+        const visible = isFrameVisible(el);
+        if (!visible && !forceFrames) {
+          const style = computedStyle(el.ownerDocument, el);
+          if (
+            style &&
+            (style.display === "none" ||
+              style.visibility === "hidden" ||
+              style.visibility === "collapse")
+          ) {
+            ctx.skippedReasons.push("hidden");
+          } else {
+            ctx.skippedReasons.push("zero-size");
+          }
+        } else {
+          ctx.sameOriginTraversed++;
+          const frameTag = `f${ctx.sameOriginTraversed}`;
+          ctx.frameMap.set(frameDoc, frameTag);
+          collectCandidates(frameDoc, out, seen, ctx, depth + 1, deep, forceFrames);
+        }
+      }
     }
   }
 }
@@ -611,7 +694,7 @@ function frameContentRect(frame: Element): RectBox {
 }
 
 /** Content scrolled outside any ancestor iframe's content box is clipped. */
-function isInsideFrameContent(el: Element, rect: ViewportRect): boolean {
+export function isInsideFrameContent(el: Element, rect: ViewportRect): boolean {
   const box = toRectBox(rect);
   for (const frame of ancestorFrames(el)) {
     if (!overlapsAtLeast(box, frameContentRect(frame), MIN_RECT_PX)) {
@@ -843,8 +926,25 @@ export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowL
       ? Math.max(1, Math.floor(options.startId))
       : 1;
 
+  const ctx: FrameCollectorContext = {
+    topDoc: doc,
+    frameMap: new Map(),
+    frameElements: new Map(),
+    totalFrames: 0,
+    sameOriginTraversed: 0,
+    crossOrigin: 0,
+    skippedReasons: [],
+  };
   const candidates: Element[] = [];
-  collectCandidates(doc, candidates, new Set<Element>(), 0, options.deep === true);
+  collectCandidates(
+    doc,
+    candidates,
+    new Set<Element>(),
+    ctx,
+    0,
+    options.deep === true,
+    options.frames === true,
+  );
 
   const modal = findVisibleModal(doc);
   const hitTest =
@@ -881,12 +981,23 @@ export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowL
 
     const id = nextId;
     nextId += 1;
-    const described = describeElement(el, id, geometry);
+    const frameTag = ctx.frameElements.get(el);
+    const described = describeElement(el, id, geometry, frameTag);
     elements.push(described);
     emitted.add(el);
     byId.set(id, el);
     lines.push(formatLine(described, isEmittedFormField(el)));
   }
 
-  return { viewport: computeViewport(doc, windowLike), elements, lines, byId, nextId, omitted };
+  const framesSummary = formatFramesSummary(ctx);
+
+  return {
+    viewport: computeViewport(doc, windowLike),
+    elements,
+    lines,
+    byId,
+    nextId,
+    omitted,
+    ...(framesSummary ? { framesSummary } : {}),
+  };
 }

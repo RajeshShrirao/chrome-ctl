@@ -22,6 +22,7 @@ const (
 	MethodPageEval      = "page.eval"
 	MethodPageAttr      = "page.attr"
 	MethodPageNet       = "page.net"
+	MethodPageFormState = "page.formstate"
 	MethodActionClick   = "action.click"
 	MethodActionType    = "action.type"
 	MethodActionPress   = "action.press"
@@ -209,6 +210,7 @@ type PageSnapParams struct {
 	FormsOnly   bool `json:"formsOnly,omitempty"`
 	Deep        bool `json:"deep,omitempty"`
 	MaxElements int  `json:"maxElements,omitempty"`
+	Frames      bool `json:"frames,omitempty"`
 }
 
 type ViewportInfo struct {
@@ -229,6 +231,7 @@ type SnapElement struct {
 	Y     int    `json:"y"`
 	W     int    `json:"w"`
 	H     int    `json:"h"`
+	Frame string `json:"frame,omitempty"`
 }
 
 type SnapResult struct {
@@ -241,6 +244,7 @@ type SnapResult struct {
 	Elements      []SnapElement `json:"elements"`
 	FormattedText string        `json:"formattedText"`
 	Omitted       int           `json:"omitted,omitempty"`
+	FramesSummary string        `json:"framesSummary,omitempty"`
 }
 
 type PageReadParams struct {
@@ -250,6 +254,7 @@ type PageReadParams struct {
 	Mode      string `json:"mode,omitempty"`
 	MaxTables int    `json:"maxTables,omitempty"`
 	MaxLinks  int    `json:"maxLinks,omitempty"`
+	Forms     bool   `json:"forms,omitempty"`
 }
 
 // ReadTable is one table extracted in tables mode. Rows never include the
@@ -279,6 +284,7 @@ type ActionClickParams struct {
 	At          *ActionCoordinates `json:"at,omitempty"`
 	DoubleClick bool               `json:"doubleClick,omitempty"`
 	Snap        bool               `json:"snap,omitempty"`
+	TimeoutMs   int                `json:"timeoutMs,omitempty"`
 }
 
 type ActionTarget struct {
@@ -300,6 +306,8 @@ type ActionClickResult struct {
 	LandedOn    string             `json:"landedOn,omitempty"`
 	URLChanged  bool               `json:"urlChanged,omitempty"`
 	DurationMs  int                `json:"durationMs"`
+	DispatchMs  int                `json:"dispatchMs,omitempty"`
+	SettleMs    int                `json:"settleMs,omitempty"`
 	Snapshot    *SnapResult        `json:"snapshot,omitempty"`
 }
 
@@ -336,15 +344,18 @@ type ActionPressResult struct {
 }
 
 type ActionScrollParams struct {
-	TabID     *int    `json:"tabId,omitempty"`
-	Direction string  `json:"direction"`
-	Amount    float64 `json:"amount"`
+	TabID      *int    `json:"tabId,omitempty"`
+	Direction  string  `json:"direction,omitempty"`
+	Amount     float64 `json:"amount,omitempty"`
+	ToSelector string  `json:"toSelector,omitempty"`
 }
 
 type ActionScrollResult struct {
 	ScrolledPixels  float64 `json:"scrolledPixels"`
 	NewScrollY      float64 `json:"newScrollY"`
 	ViewportPercent float64 `json:"viewportPercent"`
+	Target          string  `json:"target,omitempty"`
+	Frame           string  `json:"frame,omitempty"`
 }
 
 type ActionUploadParams struct {
@@ -385,16 +396,24 @@ type MediaShotParams struct {
 	Quality    int    `json:"quality,omitempty"`
 	MaxWidth   int    `json:"maxWidth,omitempty"`
 	OutputPath string `json:"outputPath,omitempty"`
+	Exact      bool   `json:"exact,omitempty"`
+	Full       bool   `json:"full,omitempty"`
 }
 
 type MediaShotResult struct {
-	Path          string `json:"path"`
-	FileSizeBytes int64  `json:"fileSizeBytes"`
-	Width         int    `json:"width"`
-	Height        int    `json:"height"`
-	SomBadgeCount int    `json:"somBadgeCount"`
-	Gray          bool   `json:"gray"`
-	CapturePath   string `json:"capturePath,omitempty"`
+	Path             string  `json:"path"`
+	FileSizeBytes    int64   `json:"fileSizeBytes"`
+	Width            int     `json:"width"`
+	Height           int     `json:"height"`
+	SomBadgeCount    int     `json:"somBadgeCount"`
+	Gray             bool    `json:"gray"`
+	CapturePath      string  `json:"capturePath,omitempty"`
+	ViewportWidth    int     `json:"viewportWidth,omitempty"`
+	ViewportHeight   int     `json:"viewportHeight,omitempty"`
+	Scale            float64 `json:"scale,omitempty"`
+	CaptureTime      string  `json:"captureTime,omitempty"`
+	Hash             string  `json:"hash,omitempty"`
+	IdenticalWarning bool    `json:"identicalWarning,omitempty"`
 }
 
 type MediaRecStartParams struct {
@@ -428,6 +447,7 @@ type MediaRecStopResult struct {
 type MediaCaptureParams struct {
 	TabID           *int `json:"tabId,omitempty"`
 	IncludeElements bool `json:"includeElements,omitempty"`
+	Full            bool `json:"full,omitempty"`
 }
 
 type MediaCaptureResult struct {
@@ -460,6 +480,27 @@ type PageAttrParams struct {
 	TabID    *int   `json:"tabId,omitempty"`
 	ID       *int   `json:"id,omitempty"`
 	Selector string `json:"selector,omitempty"`
+	Frame    string `json:"frame,omitempty"`
+}
+
+type FormControlState struct {
+	Frame    string `json:"frame"`
+	Tag      string `json:"tag"`
+	Type     string `json:"type"`
+	Name     string `json:"name,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Checked  bool   `json:"checked,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+}
+
+type PageFormStateParams struct {
+	TabID *int `json:"tabId,omitempty"`
+}
+
+type PageFormStateResult struct {
+	Controls []FormControlState `json:"controls"`
 }
 
 type ElementRect struct {
@@ -523,6 +564,7 @@ type MacroTarget struct {
 	Type        string `json:"type,omitempty"`
 	XPath       string `json:"xpath,omitempty"`
 	CSSSelector string `json:"cssSelector,omitempty"`
+	FramePath   string `json:"framePath,omitempty"`
 }
 
 type PageDescribeParams struct {

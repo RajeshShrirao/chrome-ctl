@@ -9,7 +9,7 @@ import (
 )
 
 func newSnapCmd() *cobra.Command {
-	var all, forms, deep bool
+	var all, forms, deep, frames bool
 	var maxElements int
 	cmd := &cobra.Command{
 		Use:   "snap",
@@ -20,6 +20,7 @@ func newSnapCmd() *cobra.Command {
 				All:         all,
 				FormsOnly:   forms,
 				Deep:        deep,
+				Frames:      frames,
 				MaxElements: maxElements,
 			}
 			var result protocol.SnapResult
@@ -33,6 +34,7 @@ func newSnapCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "Include all indexed elements, not just visible ones")
 	cmd.Flags().BoolVar(&forms, "forms", false, "Limit the snapshot to form controls")
 	cmd.Flags().BoolVar(&deep, "deep", false, "Include cursor:pointer controls and bare rows/cells")
+	cmd.Flags().BoolVar(&frames, "frames", false, "Traverse all same-origin frames regardless of size or visibility")
 	cmd.Flags().IntVar(&maxElements, "max-elements", 400, "Cap the number of indexed elements")
 	return cmd
 }

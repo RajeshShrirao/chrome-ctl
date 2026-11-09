@@ -63,6 +63,9 @@ type daemon struct {
 	rec     recorder
 	macro   macroRecorder
 
+	lastShotMu   sync.Mutex
+	lastShotHash string
+
 	httpSrv *http.Server
 }
 

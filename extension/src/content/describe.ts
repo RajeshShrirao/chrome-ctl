@@ -305,10 +305,172 @@ export function cssSelectorFor(el: Element): string {
   return nthOfTypeChain(el);
 }
 
+/**
+ * Compute the frame path (e.g. "iframe#quiz > iframe#questions") from topDoc to el.
+ * Returns undefined if el is in topDoc.
+ */
+export function computeFramePath(topDoc: Document, el: Element): string | undefined {
+  const elDoc = el.ownerDocument;
+  if (!elDoc || elDoc === topDoc) {
+    return undefined;
+  }
+
+  const frames: Element[] = [];
+  let currentDoc: Document | null = elDoc;
+  while (currentDoc && currentDoc !== topDoc) {
+    const frame: Element | null = currentDoc.defaultView?.frameElement ?? null;
+    if (!frame) {
+      break;
+    }
+    frames.unshift(frame);
+    currentDoc = frame.ownerDocument;
+  }
+
+  if (frames.length === 0) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const f of frames) {
+    const id = f.getAttribute("id");
+    if (id) {
+      parts.push(`iframe#${id}`);
+      continue;
+    }
+    const name = f.getAttribute("name");
+    if (name) {
+      parts.push(`iframe[name="${name}"]`);
+      continue;
+    }
+    const parentDoc = f.ownerDocument;
+    const allIframes = parentDoc ? Array.from(parentDoc.querySelectorAll("iframe, frame")) : [];
+    const idx = allIframes.indexOf(f);
+    if (idx >= 0) {
+      parts.push(`iframe:nth-of-type(${idx + 1})`);
+    } else {
+      parts.push("iframe");
+    }
+  }
+  return parts.join(" > ");
+}
+
+/** Walk down a frame path or resolve a frame identifier (e.g. "f1", "f2", "iframe#a > iframe#b") from topDoc. */
+export function resolveFramePath(topDoc: Document, framePath: string): Document | null {
+  const trimmed = framePath.trim();
+  if (!trimmed || trimmed.toLowerCase() === "top") {
+    return topDoc;
+  }
+
+  // Fast path for single frame tags like "f1", "f2"
+  const singleFMatch = /^f(\d+)$/i.exec(trimmed);
+  if (singleFMatch) {
+    const targetIdx = parseInt(singleFMatch[1], 10);
+    let count = 0;
+    let foundDoc: Document | null = null;
+    function walkAll(root: Document | ShadowRoot) {
+      if (foundDoc) return;
+      for (const el of Array.from(root.querySelectorAll("*"))) {
+        if (foundDoc) return;
+        if (el.shadowRoot) walkAll(el.shadowRoot);
+        const tag = el.tagName.toLowerCase();
+        if (tag === "iframe" || tag === "frame") {
+          try {
+            const subDoc = (el as HTMLIFrameElement).contentDocument;
+            if (subDoc) {
+              count++;
+              if (count === targetIdx) {
+                foundDoc = subDoc;
+                return;
+              }
+              walkAll(subDoc);
+            }
+          } catch {
+            // cross-origin
+          }
+        }
+      }
+    }
+    walkAll(topDoc);
+    return foundDoc;
+  }
+
+  const segments = trimmed.split(">").map((s) => s.trim()).filter(Boolean);
+  let currentDoc: Document = topDoc;
+
+  for (const seg of segments) {
+    const fMatch = /^f(\d+)$/i.exec(seg);
+    if (fMatch) {
+      const targetIdx = parseInt(fMatch[1], 10);
+      let count = 0;
+      let matchedDoc: Document | null = null;
+      function walkSameOrigin(root: Document | ShadowRoot) {
+        if (matchedDoc) return;
+        for (const el of Array.from(root.querySelectorAll("*"))) {
+          if (matchedDoc) return;
+          if (el.shadowRoot) walkSameOrigin(el.shadowRoot);
+          const tag = el.tagName.toLowerCase();
+          if (tag === "iframe" || tag === "frame") {
+            try {
+              const subDoc = (el as HTMLIFrameElement).contentDocument;
+              if (subDoc) {
+                count++;
+                if (count === targetIdx) {
+                  matchedDoc = subDoc;
+                  return;
+                }
+                walkSameOrigin(subDoc);
+              }
+            } catch {
+              // cross-origin
+            }
+          }
+        }
+      }
+      walkSameOrigin(currentDoc);
+      if (!matchedDoc) return null;
+      currentDoc = matchedDoc;
+      continue;
+    }
+
+    // Try querySelector
+    let frameEl: Element | null = null;
+    try {
+      frameEl = currentDoc.querySelector(seg);
+    } catch {
+      // not a selector
+    }
+    if (!frameEl) {
+      try {
+        frameEl = currentDoc.querySelector(`iframe#${seg}, iframe[name="${seg}"], frame#${seg}, frame[name="${seg}"]`);
+      } catch {
+        // ignore
+      }
+    }
+    if (frameEl && (frameEl.tagName.toLowerCase() === "iframe" || frameEl.tagName.toLowerCase() === "frame")) {
+      try {
+        const subDoc = (frameEl as HTMLIFrameElement).contentDocument;
+        if (subDoc) {
+          currentDoc = subDoc;
+          continue;
+        }
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  return currentDoc;
+}
+
 /** Deterministic multi-tier descriptor for an arbitrary element. */
 export function buildDescriptor(doc: Document, el: Element): MacroTarget {
   const target: MacroTarget = {};
   const ownerDoc = ownerDocumentOf(el, doc);
+
+  const framePath = computeFramePath(doc, el);
+  if (framePath) {
+    target.framePath = framePath;
+  }
 
   const testId = testIdFor(el);
   if (testId) {
@@ -597,36 +759,45 @@ export interface TargetMatch {
 
 /** Single pass over the tiers in contract order. */
 export function findTargetOnce(doc: Document, target: MacroTarget): TargetMatch | null {
+  let searchDoc = doc;
+  if (target.framePath) {
+    const resolved = resolveFramePath(doc, target.framePath);
+    if (!resolved) {
+      return null;
+    }
+    searchDoc = resolved;
+  }
+
   if (target.testId) {
-    const el = findByTestId(doc, target.testId);
+    const el = findByTestId(searchDoc, target.testId);
     if (el) {
       return { element: el, tier: "testId" };
     }
   }
 
   if (target.ariaLabel) {
-    const el = findByAriaLabel(doc, target.ariaLabel, target.role);
+    const el = findByAriaLabel(searchDoc, target.ariaLabel, target.role);
     if (el) {
       return { element: el, tier: "ariaLabel" };
     }
   }
 
   if (target.text) {
-    const el = findByText(doc, target.text);
+    const el = findByText(searchDoc, target.text);
     if (el) {
       return { element: el, tier: "text" };
     }
   }
 
   if (target.xpath) {
-    const el = findByXpath(doc, target.xpath);
+    const el = findByXpath(searchDoc, target.xpath);
     if (el) {
       return { element: el, tier: "xpath" };
     }
   }
 
   if (target.cssSelector) {
-    const el = findByCssSelector(doc, target.cssSelector);
+    const el = findByCssSelector(searchDoc, target.cssSelector);
     if (el) {
       return { element: el, tier: "cssSelector" };
     }

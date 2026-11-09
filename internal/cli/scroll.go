@@ -12,18 +12,19 @@ import (
 )
 
 const (
-	scrollTimeout       = 70 * time.Second
+	scrollTimeout       = 5 * time.Second
 	defaultScrollAmount = 0.8
 	maxScrollAmount     = 10
 )
 
 func newScrollCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "scroll <down|up> [amount]",
-		Short: "Scroll the page down or up",
-		Args:  cobra.RangeArgs(1, 2),
+	var toSelector string
+	cmd := &cobra.Command{
+		Use:   "scroll <down|up> [amount] | scroll --to <selector>",
+		Short: "Scroll the page down or up, or jump directly to a selector",
+		Args:  cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			params, err := parseScrollArgs(args)
+			params, err := parseScrollWithSelector(args, toSelector)
 			if err != nil {
 				return err
 			}
@@ -36,10 +37,25 @@ func newScrollCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&toSelector, "to", "", "Jump scroll directly to element matching CSS selector")
+	return cmd
+}
+
+func parseScrollWithSelector(args []string, toSelector string) (protocol.ActionScrollParams, error) {
+	if toSelector != "" {
+		return protocol.ActionScrollParams{ToSelector: toSelector}, nil
+	}
+	if len(args) == 0 {
+		return protocol.ActionScrollParams{}, fmt.Errorf("scroll requires direction <down|up> or --to <selector>")
+	}
+	return parseScrollArgs(args)
 }
 
 // parseScrollArgs validates the direction and optional viewport-fraction amount.
 func parseScrollArgs(args []string) (protocol.ActionScrollParams, error) {
+	if len(args) == 0 {
+		return protocol.ActionScrollParams{}, fmt.Errorf("scroll requires direction <down|up>")
+	}
 	params := protocol.ActionScrollParams{Amount: defaultScrollAmount}
 
 	direction := strings.ToLower(strings.TrimSpace(args[0]))
@@ -64,6 +80,12 @@ func parseScrollArgs(args []string) (protocol.ActionScrollParams, error) {
 }
 
 func formatScroll(result protocol.ActionScrollResult, direction string) string {
+	if result.Target != "" {
+		return fmt.Sprintf("OK: scrolled to %s\n", result.Target)
+	}
+	if result.Frame != "" {
+		return fmt.Sprintf("OK: scrolled frame %s to %dpx\n", result.Frame, int(math.Round(result.NewScrollY)))
+	}
 	return fmt.Sprintf("OK: scrolled %s %dpx to %dpx (%d%%)\n",
 		direction, int(math.Round(result.ScrolledPixels)), int(math.Round(result.NewScrollY)), int(math.Round(result.ViewportPercent)))
 }

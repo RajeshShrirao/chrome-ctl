@@ -1,5 +1,6 @@
 import { CONTENT_CHANNEL } from "../shared/content.js";
 import type {
+  ContentFormStateRequest,
   ContentReadRequest,
   ContentRequest,
   ContentResponse,
@@ -14,7 +15,9 @@ import type {
   ActionUploadResult,
   ExtensionStatusResult,
   EvalResult,
+  FormControlState,
   MediaCaptureResult,
+  PageFormStateResult,
   PageNetResult,
   PageReadResult,
   PageAttrResult,
@@ -673,6 +676,7 @@ interface SnapRequestOptions {
   all?: boolean;
   formsOnly?: boolean;
   deep?: boolean;
+  frames?: boolean;
   maxElements?: number;
 }
 
@@ -713,6 +717,9 @@ async function buildSnapResult(
   if (options.deep === true) {
     request.deep = true;
   }
+  if (options.frames === true) {
+    request.frames = true;
+  }
   if (typeof options.maxElements === "number" && Number.isFinite(options.maxElements)) {
     request.maxElements = Math.max(1, Math.round(options.maxElements));
   }
@@ -732,10 +739,20 @@ async function buildSnapResult(
     // The tab vanished or navigated mid-snap; fall back to the resolved tab.
   }
 
-  const { docId, snapshotId, omitted, viewport, elements, lines } = response.snap;
-  const formattedText = [
+  const { docId, snapshotId, omitted, viewport, elements, lines, framesSummary } = response.snap;
+  const headerLines: string[] = [
     `SNAP ${snapshotId} | TAB [${tabId}] ${current.title ?? ""} | ${current.url ?? ""}`,
     `VIEWPORT: ${Math.round(viewport.scrollY)}-${Math.round(viewport.scrollY + viewport.viewportHeight)}px of ${Math.round(viewport.totalHeight)}px (${Math.round(viewport.percent)}%)`,
+  ];
+  if (framesSummary) {
+    headerLines.push(framesSummary);
+  }
+  if (elements.length <= 5 && (framesSummary !== undefined || elements.length === 0)) {
+    headerLines.push("NOTE: page content may be inside an iframe; try snap --frames");
+  }
+
+  const formattedText = [
+    ...headerLines,
     ...lines,
     ...(omitted > 0
       ? [`OMITTED: ${omitted} candidates (use snap --deep / --max-elements to see more)`]
@@ -754,6 +771,7 @@ async function buildSnapResult(
     viewport,
     elements,
     formattedText,
+    framesSummary,
   };
 }
 
@@ -765,6 +783,7 @@ async function handlePageSnap(params: Record<string, unknown>): Promise<SnapResu
     all: params.all === true,
     formsOnly: params.formsOnly === true,
     deep: params.deep === true,
+    frames: params.frames === true,
   };
   if (typeof params.maxElements === "number" && Number.isFinite(params.maxElements)) {
     options.maxElements = params.maxElements;
@@ -788,6 +807,9 @@ async function handlePageRead(params: Record<string, unknown>): Promise<PageRead
   }
   if (params.mode === "tables" || params.mode === "links") {
     request.mode = params.mode;
+  }
+  if (params.forms === true) {
+    request.forms = true;
   }
   if (typeof params.maxTables === "number" && params.maxTables > 0) {
     request.maxTables = Math.round(params.maxTables);
@@ -823,6 +845,9 @@ async function handlePageAttr(params: Record<string, unknown>): Promise<PageAttr
   if (typeof params.selector === "string" && params.selector !== "") {
     request.selector = params.selector;
   }
+  if (typeof params.frame === "string" && params.frame !== "") {
+    request.frame = params.frame;
+  }
   if (request.id === undefined && request.selector === undefined) {
     throw new RpcFault(ErrorCodes.internal, "id or selector is required");
   }
@@ -836,6 +861,24 @@ async function handlePageAttr(params: Record<string, unknown>): Promise<PageAttr
     throw new RpcFault(ErrorCodes.internal, "unexpected content script response");
   }
   return response.attr;
+}
+
+async function handlePageFormState(params: Record<string, unknown>): Promise<PageFormStateResult> {
+  const requestedTabId = typeof params.tabId === "number" ? params.tabId : undefined;
+  const tab = await resolveTab(requestedTabId);
+  const tabId = tabIdOf(tab);
+
+  await ensureContentScriptInjected(tabId);
+
+  const request: ContentFormStateRequest = { channel: CONTENT_CHANNEL, type: "formstate" };
+  const response = await sendWithIdentity(tabId, request);
+  if (!response.ok) {
+    throw new Error(response.error);
+  }
+  if (response.type !== "formstate") {
+    throw new Error("unexpected response type");
+  }
+  return { controls: response.controls };
 }
 
 /** Resolve the action tab, mapping lookup failures to TAB_NOT_FOUND. */
@@ -1071,10 +1114,16 @@ async function handleActionClick(
     }
   }
 
+  result.dispatchMs = result.durationMs;
+  let settleMs = 0;
   if (params.snap === true) {
+    const settleStart = Date.now();
     await settleBeforeSnap(tabId);
+    settleMs = Date.now() - settleStart;
     result.snapshot = await buildSnapResult(tab);
   }
+  result.settleMs = settleMs;
+  result.durationMs = result.dispatchMs + result.settleMs;
   return result;
 }
 
@@ -1119,13 +1168,21 @@ async function handleActionScroll(
 ): Promise<ActionScrollResult> {
   const tab = await resolveActionTab(params);
   const tabId = tabIdOf(tab);
+
+  await ensureContentScriptInjected(tabId);
+
+  if (typeof params.toSelector === "string" && params.toSelector.trim() !== "") {
+    return scroll(tabId, {
+      toSelector: params.toSelector.trim(),
+      sendContent: sendWithIdentity,
+    });
+  }
+
   const amount = requireNumberParam(params, "amount");
 
   if (params.direction !== "down" && params.direction !== "up") {
     throw new RpcFault(ErrorCodes.internal, 'direction must be "down" or "up"');
   }
-
-  await ensureContentScriptInjected(tabId);
 
   return scroll(tabId, {
     direction: params.direction,
@@ -1215,47 +1272,18 @@ async function handleMediaCapture(
 
   let pngBase64: string;
   let capturePath: "captureVisibleTab" | "cdp" = "captureVisibleTab";
-  try {
-    // If window is minimized, captureVisibleTab will fail or produce a blank image.
-    let windowMinimized = false;
-    try {
-      const win = await chrome.windows.get(windowId);
-      if (win?.state === "minimized") {
-        windowMinimized = true;
-      }
-    } catch {
-      // ignore
-    }
-    if (windowMinimized) {
-      throw new Error("window is minimized");
-    }
+  const isFull = params.full === true;
 
-    const capturePromise = chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`captureVisibleTab timed out after ${CAPTURE_TIMEOUT_MS}ms`)),
-        CAPTURE_TIMEOUT_MS,
-      ),
-    );
-    const dataUrl = await Promise.race([capturePromise, timeoutPromise]);
-    pngBase64 = stripPngDataUrl(dataUrl);
-    if (pngBase64.length < MIN_PNG_BASE64_LENGTH) {
-      throw new Error(
-        `captureVisibleTab returned suspiciously small payload (${pngBase64.length} chars)`,
-      );
-    }
-  } catch (visibleError) {
-    // captureVisibleTab can fail for minimized windows, tiled surfaces, or
-    // transient rate limits; the debugger session captures the same viewport.
+  if (isFull) {
     try {
       const shot = await debuggerController.send<{ data?: string }>(
         tabId,
         "Page.captureScreenshot",
-        { format: "png", captureBeyondViewport: false },
+        { format: "png", captureBeyondViewport: true },
       );
       const raw = shot?.data;
       if (typeof raw !== "string" || raw.trim() === "") {
-        throw new Error("CDP capture returned an empty payload");
+        throw new Error("CDP full-page capture returned an empty payload");
       }
       pngBase64 = stripPngDataUrl(
         raw.trim().startsWith("data:") ? raw : `data:image/png;base64,${raw.trim()}`,
@@ -1264,9 +1292,63 @@ async function handleMediaCapture(
     } catch (fallbackError) {
       throw new RpcFault(
         ErrorCodes.internal,
-        `capture failed — captureVisibleTab: ${describeCaptureError(visibleError)}; CDP fallback: ${describeError(fallbackError)}. ` +
-          "Likely causes: the tab is not visible, DevTools or another debugger is attached, or the page is restricted.",
+        `full-page capture failed: ${describeError(fallbackError)}`,
       );
+    }
+  } else {
+    try {
+      // If window is minimized, captureVisibleTab will fail or produce a blank image.
+      let windowMinimized = false;
+      try {
+        const win = await chrome.windows.get(windowId);
+        if (win?.state === "minimized") {
+          windowMinimized = true;
+        }
+      } catch {
+        // ignore
+      }
+      if (windowMinimized) {
+        throw new Error("window is minimized");
+      }
+
+      const capturePromise = chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`captureVisibleTab timed out after ${CAPTURE_TIMEOUT_MS}ms`)),
+          CAPTURE_TIMEOUT_MS,
+        ),
+      );
+      const dataUrl = await Promise.race([capturePromise, timeoutPromise]);
+      pngBase64 = stripPngDataUrl(dataUrl);
+      if (pngBase64.length < MIN_PNG_BASE64_LENGTH) {
+        throw new Error(
+          `captureVisibleTab returned suspiciously small payload (${pngBase64.length} chars)`,
+        );
+      }
+    } catch (visibleError) {
+      // captureVisibleTab can fail for minimized windows, tiled surfaces, or
+      // transient rate limits; the debugger session captures the same viewport.
+      try {
+        const shot = await debuggerController.send<{ data?: string }>(
+          tabId,
+          "Page.captureScreenshot",
+          { format: "png", captureBeyondViewport: false },
+        );
+        const raw = shot?.data;
+        if (typeof raw !== "string" || raw.trim() === "") {
+          throw new Error("CDP capture returned an empty payload");
+        }
+        pngBase64 = stripPngDataUrl(
+          raw.trim().startsWith("data:") ? raw : `data:image/png;base64,${raw.trim()}`,
+        );
+        capturePath = "cdp";
+      } catch (fallbackError) {
+        throw new RpcFault(
+          ErrorCodes.internal,
+          `capture failed — captureVisibleTab: ${describeCaptureError(visibleError)}; CDP fallback: ${describeError(fallbackError)}. ` +
+            "Likely causes: the tab is not visible, DevTools or another debugger is attached, or the page is restricted.",
+        );
+      }
     }
   }
 
@@ -1444,6 +1526,8 @@ async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
         return { jsonrpc: "2.0", id, result: await handlePageEval(params) };
       case Methods.pageAttr:
         return { jsonrpc: "2.0", id, result: await handlePageAttr(params) };
+      case Methods.pageFormState:
+        return { jsonrpc: "2.0", id, result: await handlePageFormState(params) };
       case Methods.pageNet:
         return { jsonrpc: "2.0", id, result: await handlePageNet(params) };
       case Methods.authSSO:

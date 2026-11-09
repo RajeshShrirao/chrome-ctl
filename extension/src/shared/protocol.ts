@@ -36,6 +36,7 @@ export const Methods = {
   pageEval: "page.eval",
   pageAttr: "page.attr",
   pageNet: "page.net",
+  pageFormState: "page.formstate",
 } as const;
 
 export const ErrorCodes = {
@@ -192,6 +193,7 @@ export interface SnapElement {
   y: number;
   w: number;
   h: number;
+  frame?: string;
 }
 
 export interface SnapResult {
@@ -204,6 +206,7 @@ export interface SnapResult {
   viewport: ViewportInfo;
   elements: SnapElement[];
   formattedText: string;
+  framesSummary?: string;
 }
 
 export interface ReadTable {
@@ -242,6 +245,7 @@ export interface ActionClickParams {
   at?: ActionCoordinates;
   doubleClick?: boolean;
   snap?: boolean;
+  timeoutMs?: number;
 }
 
 export interface ActionClickResult {
@@ -252,6 +256,8 @@ export interface ActionClickResult {
   landedOn?: string;
   urlChanged?: boolean;
   durationMs: number;
+  dispatchMs?: number;
+  settleMs?: number;
   snapshot?: SnapResult;
 }
 
@@ -289,14 +295,17 @@ export interface ActionPressResult {
 
 export interface ActionScrollParams {
   tabId?: number;
-  direction: "down" | "up";
-  amount: number;
+  direction?: "down" | "up";
+  amount?: number;
+  toSelector?: string;
 }
 
 export interface ActionScrollResult {
   scrolledPixels: number;
   newScrollY: number;
   viewportPercent: number;
+  target?: string;
+  frame?: string;
 }
 
 export interface ActionUploadParams {
@@ -334,6 +343,7 @@ export interface PageWaitResult {
 export interface MediaCaptureParams {
   tabId?: number;
   includeElements?: boolean;
+  full?: boolean;
 }
 
 export interface MediaCaptureResult {
@@ -356,6 +366,7 @@ export interface MacroTarget {
   type?: string;
   xpath?: string;
   cssSelector?: string;
+  framePath?: string;
 }
 
 export interface PageDescribeParams {
@@ -416,6 +427,27 @@ export interface PageAttrParams {
   tabId?: number;
   id?: number;
   selector?: string;
+  frame?: string;
+}
+
+export interface FormControlState {
+  frame: string;
+  tag: string;
+  type: string;
+  name?: string;
+  id?: string;
+  label?: string;
+  value?: string;
+  checked?: boolean;
+  disabled?: boolean;
+}
+
+export interface PageFormStateParams {
+  tabId?: number;
+}
+
+export interface PageFormStateResult {
+  controls: FormControlState[];
 }
 
 export interface ElementRect {

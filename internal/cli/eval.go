@@ -92,12 +92,13 @@ func newURLCmd() *cobra.Command {
 }
 
 func newDescribeCmd() *cobra.Command {
-	return &cobra.Command{
+	var frame string
+	cmd := &cobra.Command{
 		Use:   `describe <id|css=selector>`,
 		Short: "Show an element's identity, attributes, and geometry",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := fetchAttr(cmd, args[0])
+			result, err := fetchAttr(cmd, args[0], frame)
 			if err != nil {
 				return err
 			}
@@ -105,15 +106,18 @@ func newDescribeCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&frame, "frame", "", "Target iframe tag (e.g. f1, f2), name, or selector")
+	return cmd
 }
 
 func newHrefCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   `href <id>`,
+	var frame string
+	cmd := &cobra.Command{
+		Use:   `href <id|css=selector>`,
 		Short: "Print an element's resolved absolute URL",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := fetchAttr(cmd, args[0])
+			result, err := fetchAttr(cmd, args[0], frame)
 			if err != nil {
 				return err
 			}
@@ -124,10 +128,15 @@ func newHrefCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&frame, "frame", "", "Target iframe tag (e.g. f1, f2), name, or selector")
+	return cmd
 }
 
-func fetchAttr(cmd *cobra.Command, arg string) (protocol.PageAttrResult, error) {
+func fetchAttr(cmd *cobra.Command, arg string, frame string) (protocol.PageAttrResult, error) {
 	params := protocol.PageAttrParams{}
+	if frame != "" {
+		params.Frame = frame
+	}
 	if selector, ok := strings.CutPrefix(arg, "css="); ok {
 		if strings.TrimSpace(selector) == "" {
 			return protocol.PageAttrResult{}, errors.New("css selector is empty")

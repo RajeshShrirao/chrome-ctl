@@ -12,15 +12,17 @@ import type {
   ContentMetricsPayload,
 } from "../shared/content.ts";
 import { effectiveInputType } from "./forms.ts";
-import { roleFor } from "./describe.ts";
+import { resolveFramePath, roleFor } from "./describe.ts";
 import {
   computeViewport,
   containsComposed,
+  isInsideFrameContent,
   labelFor,
   stateTokens,
   truncateText,
   typeToken,
   viewportRect,
+  type ViewportRect,
   type WindowLike,
 } from "./dom.ts";
 
@@ -188,36 +190,49 @@ function isInShadowOf(descendant: Element, ancestor: Element): boolean {
 }
 
 /**
- * Hit-test the element's center. Returns `null` when the environment cannot
- * answer (jsdom), in which case obscuring cannot be detected.
+ * Hit-test the element's center piercing shadow roots and same-origin frames.
+ * Returns `null` when the environment cannot answer (jsdom), in which case
+ * obscuring cannot be detected.
  */
-function hitTestCenter(
-  doc: Document,
+function hitTestPiercing(
+  topDoc: Document,
   el: Element,
-  rect: RectLike,
+  cx: number,
+  cy: number,
   viewport: { width: number; height: number },
 ): boolean | null {
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
   if (cx < 0 || cy < 0 || cx > viewport.width || cy > viewport.height) {
     return null;
   }
-  const fn = doc.elementFromPoint;
-  if (typeof fn !== "function") {
-    return null;
-  }
-  try {
-    let hit = fn.call(doc, cx, cy);
-    if (!hit) {
+  let currentDoc: Document = topDoc;
+  let currentX = cx;
+  let currentY = cy;
+  let hit: Element | null = null;
+  const seenFrames = new Set<Element>();
+
+  for (let depth = 0; depth < 16; depth += 1) {
+    const fn = currentDoc.elementFromPoint;
+    if (typeof fn !== "function") {
       return null;
     }
+    let candidate: Element | null = null;
+    try {
+      candidate = fn.call(currentDoc, currentX, currentY);
+    } catch {
+      break;
+    }
+    if (!candidate) {
+      break;
+    }
+    hit = candidate;
+
     while (
       hit &&
       (hit as Element).shadowRoot &&
       typeof (hit as Element).shadowRoot?.elementFromPoint === "function"
     ) {
       try {
-        const inner = (hit as Element).shadowRoot!.elementFromPoint(cx, cy);
+        const inner = (hit as Element).shadowRoot!.elementFromPoint(currentX, currentY);
         if (!inner || inner === hit) {
           break;
         }
@@ -226,15 +241,44 @@ function hitTestCenter(
         break;
       }
     }
-    return (
-      hit === el ||
-      el.contains(hit) ||
-      isShadowAncestor(el, hit) ||
-      isInShadowOf(el, hit)
-    );
-  } catch {
+
+    const tag = hit.tagName.toLowerCase();
+    if (tag === "iframe" || tag === "frame") {
+      if (seenFrames.has(hit)) {
+        break;
+      }
+      seenFrames.add(hit);
+      let subDoc: Document | null = null;
+      try {
+        subDoc = (hit as HTMLIFrameElement).contentDocument ?? null;
+      } catch {
+        subDoc = null;
+      }
+      if (!subDoc) {
+        break;
+      }
+      const frameRect = hit.getBoundingClientRect();
+      const clientLeft = (hit as HTMLElement).clientLeft ?? 0;
+      const clientTop = (hit as HTMLElement).clientTop ?? 0;
+      currentX = currentX - frameRect.left - clientLeft;
+      currentY = currentY - frameRect.top - clientTop;
+      currentDoc = subDoc;
+      continue;
+    }
+
+    break;
+  }
+
+  if (!hit) {
     return null;
   }
+  return (
+    hit === el ||
+    el.contains(hit) ||
+    hit.contains(el) ||
+    isShadowAncestor(el, hit) ||
+    isInShadowOf(el, hit)
+  );
 }
 
 interface Interactability {
@@ -245,13 +289,14 @@ interface Interactability {
 function describeInteractability(
   doc: Document,
   el: Element,
-  rect: RectLike,
+  rect: ViewportRect,
 ): Interactability {
   if (!el.isConnected) {
     return { interactable: false, reason: "detached" };
   }
 
-  const style = computedStyle(doc, el);
+  const ownerDoc = el.ownerDocument ?? doc;
+  const style = computedStyle(ownerDoc, el);
   if (
     style &&
     (style.display === "none" ||
@@ -261,7 +306,8 @@ function describeInteractability(
     return { interactable: false, reason: "hidden" };
   }
 
-  if (rect.width < MIN_INTERACTABLE_PX || rect.height < MIN_INTERACTABLE_PX) {
+  const localRect = el.getBoundingClientRect();
+  if (localRect.width < MIN_INTERACTABLE_PX || localRect.height < MIN_INTERACTABLE_PX) {
     return { interactable: false, reason: "zero size" };
   }
 
@@ -269,15 +315,23 @@ function describeInteractability(
     return { interactable: false, reason: "pointer-events: none" };
   }
 
-  const viewport = viewportSize(doc);
-  let measured = rect;
-  if (!isFullyInViewport(measured, viewport)) {
-    scrollIntoViewIfNeeded(el, false);
-    measured = el.getBoundingClientRect();
+  if (!isInsideFrameContent(el, rect)) {
+    return { interactable: false, reason: "frame-clipped" };
   }
 
-  if (intersectsViewport(measured, viewport)) {
-    const hit = hitTestCenter(doc, el, measured, viewport);
+  const viewport = viewportSize(doc);
+  let measured = rect;
+  const rectLike = toRectLike(measured);
+  if (!isFullyInViewport(rectLike, viewport)) {
+    scrollIntoViewIfNeeded(el, false);
+    measured = viewportRect(el);
+  }
+
+  const measuredLike = toRectLike(measured);
+  if (intersectsViewport(measuredLike, viewport)) {
+    const cx = measured.left + measured.width / 2;
+    const cy = measured.top + measured.height / 2;
+    const hit = hitTestPiercing(doc, el, cx, cy, viewport);
     if (hit === false) {
       return { interactable: false, reason: "obscured" };
     }
@@ -286,28 +340,26 @@ function describeInteractability(
   return { interactable: true, reason: "" };
 }
 
-function toRectLike(rect: DOMRect): RectLike {
+function toRectLike(rect: { left: number; top: number; width: number; height: number }): RectLike {
   return {
     left: rect.left,
     top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
+    right: rect.left + rect.width,
+    bottom: rect.top + rect.height,
     width: rect.width,
     height: rect.height,
   };
 }
 
-/** Build a fresh target payload for an already-resolved element. */export function describeTargetElement(
+/** Build a fresh target payload for an already-resolved element. */
+export function describeTargetElement(
   doc: Document,
   el: Element,
   id: number,
 ): ContentTargetPayload {
-  // Obscured/hidden checks stay local to the element's document; the payload
-  // coordinates are top-frame viewport pixels for CDP input dispatch.
   const ownerDoc = el.ownerDocument ?? doc;
-  const initial = toRectLike(el.getBoundingClientRect());
-  const { interactable, reason } = describeInteractability(ownerDoc, el, initial);
   const rect = viewportRect(el);
+  const { interactable, reason } = describeInteractability(doc, el, rect);
 
   return {
     id,
@@ -466,8 +518,17 @@ function absoluteURL(doc: Document, raw: string | null): string {
 export function buildAttrPayload(
   doc: Document,
   index: Map<number, Element> | undefined,
-  params: { id?: number; selector?: string },
+  params: { id?: number; selector?: string; frame?: string },
 ): Omit<ContentAttrPayload, "docId" | "snapshotId"> {
+  let targetDoc = doc;
+  if (params.frame) {
+    const resolved = resolveFramePath(doc, params.frame);
+    if (!resolved) {
+      throw new Error(`frame "${params.frame}" not found or cross-origin`);
+    }
+    targetDoc = resolved;
+  }
+
   let el: Element;
   let matches = 1;
 
@@ -476,7 +537,7 @@ export function buildAttrPayload(
   } else if (typeof params.selector === "string" && params.selector !== "") {
     let found: Element[];
     try {
-      found = Array.from(doc.querySelectorAll(params.selector));
+      found = Array.from(targetDoc.querySelectorAll(params.selector));
     } catch (error) {
       throw new Error(`invalid selector "${params.selector}": ${errorText(error)}`);
     }

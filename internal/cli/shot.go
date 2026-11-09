@@ -16,7 +16,7 @@ const (
 )
 
 func newShotCmd() *cobra.Command {
-	var som, gray bool
+	var som, gray, exact, full bool
 	var output string
 	var quality, maxWidth int
 	cmd := &cobra.Command{
@@ -36,6 +36,8 @@ func newShotCmd() *cobra.Command {
 			params := protocol.MediaShotParams{
 				Som:        som,
 				Gray:       gray,
+				Exact:      exact,
+				Full:       full,
 				Quality:    quality,
 				MaxWidth:   maxWidth,
 				OutputPath: path,
@@ -50,6 +52,8 @@ func newShotCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&som, "som", false, "Overlay Set-of-Mark badges on interactive elements")
 	cmd.Flags().BoolVar(&gray, "gray", false, "Save as grayscale")
+	cmd.Flags().BoolVar(&exact, "exact", false, "Save screenshot at 1:1 scale without downscaling")
+	cmd.Flags().BoolVar(&full, "full", false, "Capture full-page screenshot beyond viewport")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path (default: daemon-chosen)")
 	cmd.Flags().IntVar(&quality, "quality", defaultQuality, "Image quality (1-100)")
 	cmd.Flags().IntVar(&maxWidth, "max-width", defaultMaxWidth, "Maximum image width in pixels (256-4096)")
@@ -80,8 +84,27 @@ func resolveOutputPath(path string) (string, error) {
 }
 
 func formatShot(result protocol.MediaShotResult) string {
-	out := fmt.Sprintf("OK: saved %s (%dx%d, %s",
-		result.Path, result.Width, result.Height, formatBytes(result.FileSizeBytes))
+	scaleStr := ""
+	if result.Scale > 0 {
+		scaleStr = fmt.Sprintf(", scale %.3f", result.Scale)
+	}
+	vpStr := ""
+	if result.ViewportWidth > 0 && result.ViewportHeight > 0 {
+		vpStr = fmt.Sprintf(", viewport %dx%d, image %dx%d%s",
+			result.ViewportWidth, result.ViewportHeight, result.Width, result.Height, scaleStr)
+	}
+	hashStr := ""
+	if result.Hash != "" {
+		hashStr = fmt.Sprintf(", hash %s", result.Hash)
+	}
+	timeStr := ""
+	if result.CaptureTime != "" {
+		timeStr = fmt.Sprintf(", capture %s", result.CaptureTime)
+	}
+
+	out := fmt.Sprintf("OK: saved %s (%dx%d, %s%s%s%s",
+		result.Path, result.Width, result.Height, formatBytes(result.FileSizeBytes),
+		hashStr, timeStr, vpStr)
 	if result.Gray {
 		out += ", grayscale"
 	}
@@ -91,5 +114,9 @@ func formatShot(result protocol.MediaShotResult) string {
 	if result.CapturePath == "cdp" {
 		out += ", via CDP fallback (captureVisibleTab failed)"
 	}
-	return out + ")\n"
+	out += ")\n"
+	if result.IdenticalWarning {
+		out += "WARN: identical to previous capture; content may be composited in a subframe\n"
+	}
+	return out
 }
