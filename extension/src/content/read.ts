@@ -106,7 +106,15 @@ function finishInline(text: string): string {
 
 function inlineChildren(el: Element, doc: Document): string {
   const parts: string[] = [];
-  for (const node of Array.from(el.childNodes)) {
+  let root: Node = el;
+  try {
+    if (el.shadowRoot) {
+      root = el.shadowRoot;
+    }
+  } catch {
+    root = el;
+  }
+  for (const node of Array.from(root.childNodes)) {
     parts.push(renderInline(node, doc));
   }
   return finishInline(parts.join(""));
@@ -262,7 +270,60 @@ function renderBlock(el: Element, doc: Document, depth: number): string {
   return renderBlocks(el, doc, depth).join("\n\n");
 }
 
-function renderBlocks(root: Element, doc: Document, depth: number): string[] {
+function collectShadowRoots(
+  root: Element | Document | ShadowRoot,
+  out: ShadowRoot[] = [],
+  depth = 0,
+): ShadowRoot[] {
+  if (depth > 64) {
+    return out;
+  }
+  for (const el of Array.from(root.querySelectorAll("*"))) {
+    let shadow: ShadowRoot | null = null;
+    try {
+      shadow = el.shadowRoot ?? null;
+    } catch {
+      shadow = null;
+    }
+    if (shadow) {
+      out.push(shadow);
+      collectShadowRoots(shadow, out, depth + 1);
+    }
+  }
+  return out;
+}
+
+function collectIframes(
+  root: Element | Document | ShadowRoot,
+  seenDocs = new Set<Document>(),
+  out: HTMLIFrameElement[] = [],
+  depth = 0,
+): HTMLIFrameElement[] {
+  if (depth > 64) {
+    return out;
+  }
+  const elements = Array.from(root.querySelectorAll("*"));
+  if ((root as Node).nodeType === 1 && (root as Element).tagName.toLowerCase() === "iframe") {
+    elements.unshift(root);
+  }
+  for (const el of elements) {
+    let shadow: ShadowRoot | null = null;
+    try {
+      shadow = el.shadowRoot ?? null;
+    } catch {
+      shadow = null;
+    }
+    if (shadow) {
+      collectIframes(shadow, seenDocs, out, depth + 1);
+    }
+    if (el.tagName.toLowerCase() === "iframe") {
+      out.push(el as HTMLIFrameElement);
+    }
+  }
+  return out;
+}
+
+function renderBlocks(root: Element | ShadowRoot, doc: Document, depth: number): string[] {
   const blocks: string[] = [];
   let inlineBuffer: string[] = [];
 
@@ -289,6 +350,22 @@ function renderBlocks(root: Element, doc: Document, depth: number): string[] {
     const el = node as Element;
     const tag = el.tagName.toLowerCase();
     if (SKIP_TAGS.has(tag) || isHidden(doc, el)) {
+      continue;
+    }
+
+    let shadow: ShadowRoot | null = null;
+    try {
+      shadow = el.shadowRoot ?? null;
+    } catch {
+      shadow = null;
+    }
+
+    if (shadow) {
+      flush();
+      const shadowBlocks = renderBlocks(shadow, doc, depth);
+      if (shadowBlocks.length > 0) {
+        blocks.push(...shadowBlocks);
+      }
       continue;
     }
 
@@ -320,7 +397,15 @@ function cleanBlock(block: string): string {
 
 /** Pick the densest main-content container, falling back to <body>. */
 export function pickReadRoot(doc: Document): Element {
-  const candidates = Array.from(doc.querySelectorAll('main, article, [role="main"]'));
+  const roots: (Document | ShadowRoot)[] = [doc, ...collectShadowRoots(doc)];
+  const candidates: Element[] = [];
+  for (const r of roots) {
+    try {
+      candidates.push(...Array.from(r.querySelectorAll('main, article, [role="main"]')));
+    } catch {
+      // ignore
+    }
+  }
   let best: Element | null = null;
   let bestLength = 0;
 
@@ -344,6 +429,46 @@ export function extractMarkdown(doc: Document, root?: Element): string {
   const blocks = renderBlocks(target, doc, 0)
     .map(cleanBlock)
     .filter((block) => block !== "");
+
+  let targetShadow: ShadowRoot | null = null;
+  try {
+    targetShadow = target.shadowRoot ?? null;
+  } catch {
+    targetShadow = null;
+  }
+  if (targetShadow) {
+    const shadowBlocks = renderBlocks(targetShadow, doc, 0)
+      .map(cleanBlock)
+      .filter((block) => block !== "");
+    for (const sb of shadowBlocks) {
+      if (!blocks.includes(sb)) {
+        blocks.push(sb);
+      }
+    }
+  }
+
+  // Pierce same-origin iframes in extractMarkdown
+  const seenDocs = new Set<Document>([doc]);
+  const iframes = collectIframes(target, seenDocs);
+  for (const iframe of iframes) {
+    if (isHidden(doc, iframe)) {
+      continue;
+    }
+    let iframeDoc: Document | null = null;
+    try {
+      iframeDoc = iframe.contentDocument ?? null;
+    } catch {
+      iframeDoc = null;
+    }
+    if (iframeDoc && !seenDocs.has(iframeDoc)) {
+      seenDocs.add(iframeDoc);
+      const subMarkdown = extractMarkdown(iframeDoc);
+      if (subMarkdown) {
+        blocks.push(subMarkdown);
+      }
+    }
+  }
+
   return blocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -547,7 +672,9 @@ export function extractLinks(
       continue;
     }
     const raw = (anchor.getAttribute("href") ?? "").trim();
-    if (raw === "" || raw.startsWith("#") || /^javascript:/i.test(raw)) {
+    const hasOnClick = anchor.hasAttribute("onclick");
+    const isJs = /^javascript:/i.test(raw);
+    if (raw === "" || raw.startsWith("#") || (isJs && !hasOnClick)) {
       continue;
     }
     const href = absoluteHref(doc, raw);

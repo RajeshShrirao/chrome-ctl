@@ -10,6 +10,7 @@ import type { NetEntry } from "../shared/protocol.js";
 
 export const MAX_NET_ENTRIES = 200;
 export const DEFAULT_QUIET_MS = 500;
+export const DEFAULT_LONG_POLL_MS = 10_000;
 const PERSIST_THROTTLE_MS = 250;
 const STORAGE_PREFIX = "netlog:";
 const IGNORED_TYPES = new Set(["websocket", "eventsource"]);
@@ -72,6 +73,19 @@ export class NetLog {
 
   get inflight(): number {
     return this.pending.size;
+  }
+
+  inflightExcludingLongPoll(
+    now = Date.now(),
+    longPollMs = DEFAULT_LONG_POLL_MS,
+  ): number {
+    let count = 0;
+    for (const req of this.pending.values()) {
+      if (now - req.startedAt < longPollMs) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   isIgnoredType(type: string): boolean {
@@ -424,6 +438,7 @@ export async function waitForQuiet(
   tabId: number,
   timeoutMs: number,
   quietMs: number,
+  longPollMs: number = DEFAULT_LONG_POLL_MS,
 ): Promise<QuietWait> {
   const log = await loadLog(tabId);
   const started = Date.now();
@@ -431,11 +446,14 @@ export async function waitForQuiet(
 
   for (;;) {
     const now = Date.now();
-    if (log.tracker.isQuiet(now, quietMs)) {
+    const activeInflight = log.inflightExcludingLongPoll(now, longPollMs);
+    const quiet =
+      activeInflight === 0 && now - log.tracker.lastActivityAt >= quietMs;
+    if (quiet) {
       return {
         matched: true,
         waitedMs: now - started,
-        inflight: 0,
+        inflight: activeInflight,
         requests: log.requestsSeen - baseline,
       };
     }
@@ -443,7 +461,7 @@ export async function waitForQuiet(
       return {
         matched: false,
         waitedMs: now - started,
-        inflight: log.inflight,
+        inflight: activeInflight,
         requests: log.requestsSeen - baseline,
         reason: "timeout",
       };

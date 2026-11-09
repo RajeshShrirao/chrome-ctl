@@ -212,10 +212,10 @@ type PageSnapParams struct {
 }
 
 type ViewportInfo struct {
-	ScrollY        int `json:"scrollY"`
-	ViewportHeight int `json:"viewportHeight"`
-	TotalHeight    int `json:"totalHeight"`
-	Percent        int `json:"percent"`
+	ScrollY        float64 `json:"scrollY"`
+	ViewportHeight float64 `json:"viewportHeight"`
+	TotalHeight    float64 `json:"totalHeight"`
+	Percent        float64 `json:"percent"`
 }
 
 type SnapElement struct {
@@ -342,9 +342,9 @@ type ActionScrollParams struct {
 }
 
 type ActionScrollResult struct {
-	ScrolledPixels  int `json:"scrolledPixels"`
-	NewScrollY      int `json:"newScrollY"`
-	ViewportPercent int `json:"viewportPercent"`
+	ScrolledPixels  float64 `json:"scrolledPixels"`
+	NewScrollY      float64 `json:"newScrollY"`
+	ViewportPercent float64 `json:"viewportPercent"`
 }
 
 type ActionUploadParams struct {
@@ -368,6 +368,7 @@ type PageWaitParams struct {
 	Network    bool   `json:"network,omitempty"`
 	QuietMs    int    `json:"quietMs,omitempty"`
 	TimeoutMs  int    `json:"timeoutMs,omitempty"`
+	LongPollMs int    `json:"longPollMs,omitempty"`
 }
 
 type PageWaitResult struct {

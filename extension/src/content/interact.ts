@@ -15,6 +15,7 @@ import { effectiveInputType } from "./forms.ts";
 import { roleFor } from "./describe.ts";
 import {
   computeViewport,
+  containsComposed,
   labelFor,
   stateTokens,
   truncateText,
@@ -178,6 +179,14 @@ export function scrollIntoViewIfNeeded(el: Element, inline: boolean): void {
   }
 }
 
+function isShadowAncestor(ancestor: Element, descendant: Element): boolean {
+  return containsComposed(ancestor, descendant);
+}
+
+function isInShadowOf(descendant: Element, ancestor: Element): boolean {
+  return containsComposed(ancestor, descendant);
+}
+
 /**
  * Hit-test the element's center. Returns `null` when the environment cannot
  * answer (jsdom), in which case obscuring cannot be detected.
@@ -198,11 +207,31 @@ function hitTestCenter(
     return null;
   }
   try {
-    const hit = fn.call(doc, cx, cy);
+    let hit = fn.call(doc, cx, cy);
     if (!hit) {
       return null;
     }
-    return hit === el || el.contains(hit);
+    while (
+      hit &&
+      (hit as Element).shadowRoot &&
+      typeof (hit as Element).shadowRoot?.elementFromPoint === "function"
+    ) {
+      try {
+        const inner = (hit as Element).shadowRoot!.elementFromPoint(cx, cy);
+        if (!inner || inner === hit) {
+          break;
+        }
+        hit = inner;
+      } catch {
+        break;
+      }
+    }
+    return (
+      hit === el ||
+      el.contains(hit) ||
+      isShadowAncestor(el, hit) ||
+      isInShadowOf(el, hit)
+    );
   } catch {
     return null;
   }
@@ -347,21 +376,76 @@ export function readIndexedValue(
 
 /** Human-readable description of the topmost element at a viewport point. */
 export function elementAtPoint(doc: Document, x: number, y: number): string {
-  const fn = doc.elementFromPoint;
-  if (typeof fn !== "function") {
-    return "";
-  }
+  let currentDoc: Document = doc;
+  let currentX = x;
+  let currentY = y;
   let hit: Element | null = null;
-  try {
-    hit = fn.call(doc, x, y);
-  } catch {
-    return "";
+  const seenFrames = new Set<Element>();
+
+  for (let depth = 0; depth < 16; depth += 1) {
+    const fn = currentDoc.elementFromPoint;
+    if (typeof fn !== "function") {
+      break;
+    }
+    let candidate: Element | null = null;
+    try {
+      candidate = fn.call(currentDoc, currentX, currentY);
+    } catch {
+      break;
+    }
+    if (!candidate) {
+      break;
+    }
+    hit = candidate;
+
+    while (
+      hit &&
+      (hit as Element).shadowRoot &&
+      typeof (hit as Element).shadowRoot?.elementFromPoint === "function"
+    ) {
+      try {
+        const inner = (hit as Element).shadowRoot!.elementFromPoint(currentX, currentY);
+        if (!inner || inner === hit) {
+          break;
+        }
+        hit = inner;
+      } catch {
+        break;
+      }
+    }
+
+    const tag = hit.tagName.toLowerCase();
+    if (tag === "iframe" || tag === "frame") {
+      if (seenFrames.has(hit)) {
+        break;
+      }
+      seenFrames.add(hit);
+      let subDoc: Document | null = null;
+      try {
+        subDoc = (hit as HTMLIFrameElement).contentDocument ?? null;
+      } catch {
+        subDoc = null;
+      }
+      if (!subDoc) {
+        break;
+      }
+      const frameRect = hit.getBoundingClientRect();
+      const clientLeft = (hit as HTMLElement).clientLeft ?? 0;
+      const clientTop = (hit as HTMLElement).clientTop ?? 0;
+      currentX = currentX - frameRect.left - clientLeft;
+      currentY = currentY - frameRect.top - clientTop;
+      currentDoc = subDoc;
+      continue;
+    }
+
+    break;
   }
+
   if (hit === null || hit === undefined) {
     return "";
   }
   const tag = hit.tagName.toLowerCase();
-  const label = truncateText(labelFor(hit, hit.ownerDocument ?? doc), LABEL_MAX_CHARS);
+  const label = truncateText(labelFor(hit, hit.ownerDocument ?? currentDoc), LABEL_MAX_CHARS);
   return label === "" ? `<${tag}>` : `<${tag}> "${label}"`;
 }
 

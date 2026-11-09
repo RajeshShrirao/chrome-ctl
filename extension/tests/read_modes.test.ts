@@ -5,7 +5,9 @@ import { JSDOM } from "jsdom";
 import {
   MAX_READ_TABLES,
   extractLinks,
+  extractMarkdown,
   extractTables,
+  pickReadRoot,
 } from "../src/content/read.ts";
 
 function makeDoc(html: string): Document {
@@ -114,4 +116,42 @@ test("link extraction caps the result", () => {
   const { links, truncated } = extractLinks(doc, undefined, 3);
   assert.equal(links.length, 3);
   assert.equal(truncated, true);
+});
+
+test("links keep javascript href when onclick attribute is present", () => {
+  const doc = makeDoc(`
+    <a href="javascript:void(0)" onclick="doSomething()">Click me</a>
+    <a href="javascript:void(0)">Drop me</a>
+  `);
+  const { links } = extractLinks(doc);
+  assert.deepEqual(links, [
+    { text: "Click me", href: "javascript:void(0)" },
+  ]);
+});
+
+test("extractMarkdown pierces open shadow roots and same-origin iframes", () => {
+  const dom = new JSDOM(`<!doctype html><html><body>
+    <div id="host"></div>
+    <iframe id="subframe" src="about:blank"></iframe>
+  </body></html>`, { url: "https://example.test/main" });
+  const doc = dom.window.document;
+
+  const host = doc.getElementById("host")!;
+  const shadow = host.attachShadow({ mode: "open" });
+  const shadowHeading = doc.createElement("h2");
+  shadowHeading.textContent = "Shadow Heading";
+  const shadowPara = doc.createElement("p");
+  shadowPara.textContent = "Shadow content";
+  shadow.appendChild(shadowHeading);
+  shadow.appendChild(shadowPara);
+
+  const iframe = doc.getElementById("subframe") as HTMLIFrameElement;
+  const iframeDoc = iframe.contentDocument!;
+  iframeDoc.body.innerHTML = "<h3>Iframe Subheading</h3><p>Iframe body</p>";
+
+  const md = extractMarkdown(doc);
+  assert.ok(md.includes("## Shadow Heading"));
+  assert.ok(md.includes("Shadow content"));
+  assert.ok(md.includes("### Iframe Subheading"));
+  assert.ok(md.includes("Iframe body"));
 });

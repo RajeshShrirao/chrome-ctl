@@ -55,6 +55,7 @@ func NewRoot() *cobra.Command {
 		newRecCmd(),
 		newEvalCmd(),
 		newDescribeCmd(),
+		newBatchCmd(),
 		newHrefCmd(),
 		newURLCmd(),
 		newSSOCmd(),

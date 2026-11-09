@@ -65,5 +65,5 @@ func parseScrollArgs(args []string) (protocol.ActionScrollParams, error) {
 
 func formatScroll(result protocol.ActionScrollResult, direction string) string {
 	return fmt.Sprintf("OK: scrolled %s %dpx to %dpx (%d%%)\n",
-		direction, result.ScrolledPixels, result.NewScrollY, result.ViewportPercent)
+		direction, int(math.Round(result.ScrolledPixels)), int(math.Round(result.NewScrollY)), int(math.Round(result.ViewportPercent)))
 }

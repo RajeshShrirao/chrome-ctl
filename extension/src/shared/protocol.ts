@@ -319,6 +319,7 @@ export interface PageWaitParams {
   ignoreCase?: boolean;
   network?: boolean;
   quietMs?: number;
+  longPollMs?: number;
   timeoutMs?: number;
 }
 

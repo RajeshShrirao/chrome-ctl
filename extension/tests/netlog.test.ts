@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MAX_NET_ENTRIES, NetLog, QuietTracker } from "../src/background/netlog.ts";
+import {
+  DEFAULT_LONG_POLL_MS,
+  MAX_NET_ENTRIES,
+  NetLog,
+  QuietTracker,
+} from "../src/background/netlog.ts";
 
 test("quiet tracker requires zero inflight and a full quiet window", () => {
   const tracker = new QuietTracker(1_000);
@@ -106,4 +111,21 @@ test("a navigation restarts the quiet window", () => {
   log.noteNavigation(10_000);
   assert.equal(log.tracker.isQuiet(10_400, 500), false);
   assert.equal(log.tracker.isQuiet(10_500, 500), true);
+});
+
+test("inflightExcludingLongPoll ignores pending requests older than longPollMs", () => {
+  assert.equal(DEFAULT_LONG_POLL_MS, 10_000);
+  const log = new NetLog();
+  log.requestStart("r1", "https://example.test/stream", "GET", "Fetch", 1_000);
+  log.requestStart("r2", "https://example.test/recent", "GET", "Fetch", 11_500);
+
+  assert.equal(log.inflight, 2);
+  // At now = 12_000: r1 started 11_000ms ago (> 10_000ms), r2 started 500ms ago (< 10_000ms)
+  assert.equal(log.inflightExcludingLongPoll(12_000, 10_000), 1);
+
+  // At now = 22_000: both are older than 10_000ms
+  assert.equal(log.inflightExcludingLongPoll(22_000, 10_000), 0);
+
+  // Custom longPollMs = 15_000ms: at 12_000, r1 is 11s old (< 15s)
+  assert.equal(log.inflightExcludingLongPoll(12_000, 15_000), 2);
 });

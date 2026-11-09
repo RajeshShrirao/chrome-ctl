@@ -7,6 +7,7 @@ import {
   buildStateEntries,
   buildTargetPayload,
   cssPathFor,
+  elementAtPoint,
   focusIndexedElement,
   isEditableElement,
   waitForContent,
@@ -372,4 +373,55 @@ test("text wait honors ignoreCase and times out otherwise", async () => {
     timeoutMs: 100,
   });
   assert.equal(insensitive.matched, true);
+});
+
+test("target accepts an element inside a shadow root when host is hit", () => {
+  const doc = makeDoc('<div id="host"></div>');
+  const host = doc.getElementById("host")!;
+  const shadow = host.attachShadow({ mode: "open" });
+  const button = doc.createElement("button");
+  button.textContent = "Shadow button";
+  shadow.appendChild(button);
+
+  stubRect(button, { x: 10, y: 10, w: 100, h: 30 });
+  Object.defineProperty(doc, "elementFromPoint", {
+    configurable: true,
+    value: () => host,
+  });
+
+  const payload = buildTargetPayload(doc, indexed(button), 1);
+  assert.equal(payload.interactable, true);
+  assert.equal(payload.reason, "");
+});
+
+test("elementAtPoint pierces into same-origin iframe recursively adjusting coordinates", () => {
+  const dom = new JSDOM(`<!doctype html><html><body>
+    <iframe id="frame" src="about:blank"></iframe>
+  </body></html>`, { url: "https://example.test/main" });
+  const doc = dom.window.document;
+  const frame = doc.getElementById("frame") as HTMLIFrameElement;
+  stubRect(frame, { x: 50, y: 50, w: 300, h: 200 });
+
+  const subDoc = frame.contentDocument!;
+  subDoc.body.innerHTML = '<button id="btn" aria-label="Submit">Send</button>';
+  const btn = subDoc.getElementById("btn")!;
+
+  Object.defineProperty(doc, "elementFromPoint", {
+    configurable: true,
+    value: (x: number, y: number) => {
+      if (x >= 50 && y >= 50) return frame;
+      return null;
+    },
+  });
+
+  Object.defineProperty(subDoc, "elementFromPoint", {
+    configurable: true,
+    value: (x: number, y: number) => {
+      if (x === 50 && y === 50) return btn;
+      return null;
+    },
+  });
+
+  const desc = elementAtPoint(doc, 100, 100);
+  assert.equal(desc, '<button> "Submit"');
 });

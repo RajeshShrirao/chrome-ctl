@@ -581,12 +581,21 @@ async function handleWindowCreate(
 
   const created = await chrome.windows.create(
     url === undefined
-      ? { focused, type: "normal" }
-      : { url, focused, type: "normal" },
+      ? { focused, type: "normal", state: "normal" }
+      : { url, focused, type: "normal", state: "normal" },
   );
   const windowId = created?.id;
   if (typeof windowId !== "number") {
     throw new Error("Chrome did not return a window id");
+  }
+
+  try {
+    const win = await chrome.windows.get(windowId);
+    if (win && (win.state === "fullscreen" || win.state === "maximized")) {
+      await chrome.windows.update(windowId, { state: "normal" });
+    }
+  } catch {
+    // best-effort state reset
   }
 
   await writeAutomationWindowId(windowId);
@@ -667,7 +676,7 @@ interface SnapRequestOptions {
   maxElements?: number;
 }
 
-const SNAP_SETTLE_MS = 2_500;
+const SNAP_SETTLE_MS = 1_200;
 const URL_PROBE_MS = 150;
 
 function delay(ms: number): Promise<void> {
@@ -726,7 +735,7 @@ async function buildSnapResult(
   const { docId, snapshotId, omitted, viewport, elements, lines } = response.snap;
   const formattedText = [
     `SNAP ${snapshotId} | TAB [${tabId}] ${current.title ?? ""} | ${current.url ?? ""}`,
-    `VIEWPORT: ${viewport.scrollY}-${viewport.scrollY + viewport.viewportHeight}px of ${viewport.totalHeight}px (${viewport.percent}%)`,
+    `VIEWPORT: ${Math.round(viewport.scrollY)}-${Math.round(viewport.scrollY + viewport.viewportHeight)}px of ${Math.round(viewport.totalHeight)}px (${Math.round(viewport.percent)}%)`,
     ...lines,
     ...(omitted > 0
       ? [`OMITTED: ${omitted} candidates (use snap --deep / --max-elements to see more)`]
@@ -922,6 +931,10 @@ async function handlePageWait(params: Record<string, unknown>): Promise<PageWait
     typeof params.quietMs === "number" && Number.isFinite(params.quietMs)
       ? Math.max(50, Math.min(10_000, Math.round(params.quietMs)))
       : 500;
+  const longPollMs =
+    typeof params.longPollMs === "number" && Number.isFinite(params.longPollMs)
+      ? Math.max(1_000, Math.round(params.longPollMs))
+      : undefined;
 
   if (!network && text === undefined) {
     const request: ContentRequest = {
@@ -950,7 +963,7 @@ async function handlePageWait(params: Record<string, unknown>): Promise<PageWait
         "network events unavailable on this tab: the debugger could not enable CDP Network (DevTools may be open)",
       );
     }
-    waits.push(waitForQuiet(tabId, timeoutMs, quietMs));
+    waits.push(waitForQuiet(tabId, timeoutMs, quietMs, longPollMs));
   }
 
   if (text !== undefined) {
@@ -1197,11 +1210,40 @@ async function handleMediaCapture(
     throw new RpcFault(ErrorCodes.internal, `tab ${tabId} is not attached to a window`);
   }
 
+  const CAPTURE_TIMEOUT_MS = 5_000;
+  const MIN_PNG_BASE64_LENGTH = 200;
+
   let pngBase64: string;
   let capturePath: "captureVisibleTab" | "cdp" = "captureVisibleTab";
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+    // If window is minimized, captureVisibleTab will fail or produce a blank image.
+    let windowMinimized = false;
+    try {
+      const win = await chrome.windows.get(windowId);
+      if (win?.state === "minimized") {
+        windowMinimized = true;
+      }
+    } catch {
+      // ignore
+    }
+    if (windowMinimized) {
+      throw new Error("window is minimized");
+    }
+
+    const capturePromise = chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`captureVisibleTab timed out after ${CAPTURE_TIMEOUT_MS}ms`)),
+        CAPTURE_TIMEOUT_MS,
+      ),
+    );
+    const dataUrl = await Promise.race([capturePromise, timeoutPromise]);
     pngBase64 = stripPngDataUrl(dataUrl);
+    if (pngBase64.length < MIN_PNG_BASE64_LENGTH) {
+      throw new Error(
+        `captureVisibleTab returned suspiciously small payload (${pngBase64.length} chars)`,
+      );
+    }
   } catch (visibleError) {
     // captureVisibleTab can fail for minimized windows, tiled surfaces, or
     // transient rate limits; the debugger session captures the same viewport.

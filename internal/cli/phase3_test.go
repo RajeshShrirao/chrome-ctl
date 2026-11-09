@@ -87,6 +87,11 @@ func TestFormatScroll(t *testing.T) {
 	if got, want := formatScroll(result, "down"), "OK: scrolled down 720px to 720px (17%)\n"; got != want {
 		t.Errorf("formatScroll() = %q, want %q", got, want)
 	}
+
+	floatResult := protocol.ActionScrollResult{ScrolledPixels: 719.6, NewScrollY: 720.4, ViewportPercent: 16.8}
+	if got, want := formatScroll(floatResult, "up"), "OK: scrolled up 720px to 720px (17%)\n"; got != want {
+		t.Errorf("formatScroll(floatResult) = %q, want %q", got, want)
+	}
 }
 
 func TestFormatBytesAndUpload(t *testing.T) {
