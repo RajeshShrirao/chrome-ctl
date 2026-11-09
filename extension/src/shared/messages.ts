@@ -22,5 +22,7 @@ export interface WsStatusReply {
   tokenConfigured: boolean;
   pairing?: boolean;
   daemonVersion?: string;
+  daemonProtocolVersion?: string;
+  daemonCapabilities?: string[];
   lastError?: string;
 }

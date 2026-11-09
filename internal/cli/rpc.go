@@ -54,27 +54,55 @@ func callRPCWithTimeout(cmd *cobra.Command, method string, params, out any, time
 	return nil
 }
 
+// rpcMappedError keeps the protocol code alongside the user-facing text so
+// callers (for example bulk retries) can branch on data, never on message text.
+type rpcMappedError struct {
+	code    int
+	message string
+	data    any
+	display string
+}
+
+func (e *rpcMappedError) Error() string { return e.display }
+
+// rpcErrorCode returns the protocol code carried by a mapped error.
+func rpcErrorCode(err error) (int, bool) {
+	var mapped *rpcMappedError
+	if errors.As(err, &mapped) {
+		return mapped.code, true
+	}
+	return 0, false
+}
+
 func mapRPCError(rpcErr *protocol.RPCError) error {
+	display := rpcErr.Message
 	switch rpcErr.Code {
 	case protocol.ErrConnection:
-		return fmt.Errorf("Chrome extension not connected (daemon reported: %s)", rpcErr.Message)
+		display = fmt.Sprintf("Chrome extension not connected (daemon reported: %s)", rpcErr.Message)
 	case protocol.ErrDispatchedUnconfirmed:
-		return fmt.Errorf("DISPATCHED, %s. State unknown — run `chrome-ctl snap` before retrying; do not repeat the action blindly", rpcErr.Message)
+		display = fmt.Sprintf("DISPATCHED, %s. State unknown — run `chrome-ctl snap` before retrying; do not repeat the action blindly", rpcErr.Message)
 	case protocol.ErrSnapshotStale, protocol.ErrFeatureDisabled:
-		return errors.New(rpcErr.Message)
+		display = rpcErr.Message
 	case protocol.ErrElementNotFound, protocol.ErrElementNotInteractable, protocol.ErrTabNotFound,
 		protocol.ErrDebuggerDetached, protocol.ErrNavigationFailed,
 		protocol.ErrSSOTimeout:
 		// These carry actionable messages from the extension; show them verbatim.
-		return errors.New(rpcErr.Message)
+		display = rpcErr.Message
 	case protocol.ErrInternal:
 		// The offscreen relay reports its own deadline this way. The request
 		// was already dispatched, so the side effect may have occurred.
 		if rpcErr.Message == "extension timed out" {
-			return errors.New("DISPATCHED, the extension stopped waiting for an ack. State unknown — run `chrome-ctl snap` before retrying; do not repeat the action blindly")
+			display = "DISPATCHED, the extension stopped waiting for an ack. State unknown — run `chrome-ctl snap` before retrying; do not repeat the action blindly"
+		} else {
+			display = fmt.Sprintf("%s (code %d)", rpcErr.Message, rpcErr.Code)
 		}
-		return fmt.Errorf("%s (code %d)", rpcErr.Message, rpcErr.Code)
 	default:
-		return fmt.Errorf("%s (code %d)", rpcErr.Message, rpcErr.Code)
+		display = fmt.Sprintf("%s (code %d)", rpcErr.Message, rpcErr.Code)
+	}
+	return &rpcMappedError{
+		code:    rpcErr.Code,
+		message: rpcErr.Message,
+		data:    rpcErr.Data,
+		display: display,
 	}
 }

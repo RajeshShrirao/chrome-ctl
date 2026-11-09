@@ -9,12 +9,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
 )
 
 const maxResponseBytes = 1 << 20
+
+// The daemon can legitimately hold a response for minutes (humanized typing),
+// so there is deliberately no overall Client.Timeout. Deadlines come from the
+// caller's context; these settings only bound connection setup and idle reuse.
+const (
+	dialTimeout           = 5 * time.Second
+	tlsHandshakeTimeout   = 5 * time.Second
+	idleConnTimeout       = 90 * time.Second
+	expectContinueTimeout = 1 * time.Second
+	maxIdleConns          = 64
+	maxIdleConnsPerHost   = 16
+)
 
 type Client struct {
 	addr  string
@@ -23,7 +37,24 @@ type Client struct {
 }
 
 func New(addr, token string) *Client {
-	return &Client{addr: addr, token: token, http: &http.Client{}}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   dialTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ExpectContinueTimeout: expectContinueTimeout,
+	}
+	return &Client{
+		addr:  addr,
+		token: token,
+		http:  &http.Client{Transport: transport},
+	}
 }
 
 // Call posts a JSON-RPC request and returns either the raw result or the daemon's RPC error.

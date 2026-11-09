@@ -15,7 +15,7 @@ import (
 
 func newClickAtCmd() *cobra.Command {
 	var snap, double bool
-	var fromShot string
+	var fromShot, seed string
 	cmd := &cobra.Command{
 		Use:   "clickat <X,Y | X Y>",
 		Short: "Click exact viewport CSS pixels or image coordinates with --from-shot",
@@ -41,6 +41,7 @@ func newClickAtCmd() *cobra.Command {
 				At:          &protocol.ActionCoordinates{X: x, Y: y},
 				DoubleClick: double,
 				Snap:        snap,
+				Seed:        seed,
 			}
 			var result protocol.ActionClickResult
 			if err := callRPCWithTimeout(cmd, protocol.MethodActionClick, params, &result, clickTimeout); err != nil {
@@ -53,6 +54,7 @@ func newClickAtCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&snap, "snap", false, "Include a page snapshot after clicking")
 	cmd.Flags().BoolVar(&double, "double", false, "Double-click instead of a single click")
 	cmd.Flags().StringVar(&fromShot, "from-shot", "", "Convert coordinates from screenshot image pixels to viewport pixels")
+	cmd.Flags().StringVar(&seed, "seed", "", "Deterministic seed for humanized cursor trajectory and landing point")
 	return cmd
 }
 

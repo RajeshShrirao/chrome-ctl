@@ -157,6 +157,8 @@ export interface SnapPayload {
   elements: SnapElement[];
   lines: string[];
   framesSummary?: string;
+  /** Ids that left the document since the previous snapshot. */
+  removed?: number[];
 }
 
 /**

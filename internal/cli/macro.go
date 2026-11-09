@@ -96,6 +96,8 @@ func newMacroListCmd() *cobra.Command {
 
 func newMacroRunCmd() *cobra.Command {
 	var varsRaw string
+	var runID string
+	var resume bool
 	cmd := &cobra.Command{
 		Use:   "run <name>",
 		Short: "Replay a saved macro with parameter substitution",
@@ -105,16 +107,18 @@ func newMacroRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMacro(cmd, args[0], vars)
+			return runMacro(cmd, args[0], vars, runID, resume)
 		},
 	}
 	cmd.Flags().StringVar(&varsRaw, "vars", defaultMacroVars, "JSON object of macro parameter values")
+	cmd.Flags().StringVar(&runID, "run-id", "", "Execution run identifier for checkpointing and resuming")
+	cmd.Flags().BoolVar(&resume, "resume", false, "Resume from the last completed step in the run checkpoint")
 	return cmd
 }
 
 // runMacro calls macro.run directly (rather than via callRPCWithTimeout) so that
 // a step failure's structured error data can be turned into a clean snap.
-func runMacro(cmd *cobra.Command, name string, vars map[string]string) error {
+func runMacro(cmd *cobra.Command, name string, vars map[string]string, runID string, resume bool) error {
 	c, err := newRPCClient()
 	if err != nil {
 		return err
@@ -123,7 +127,7 @@ func runMacro(cmd *cobra.Command, name string, vars map[string]string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), macroRunTimeout)
 	defer cancel()
 
-	params := protocol.MacroRunParams{Name: name, Vars: vars}
+	params := protocol.MacroRunParams{Name: name, Vars: vars, RunID: runID, Resume: resume}
 	raw, rpcErr, err := c.Call(ctx, protocol.MethodMacroRun, params)
 	if err != nil {
 		return fmt.Errorf("%s: %w", protocol.MethodMacroRun, err)
@@ -222,13 +226,23 @@ func formatMacroList(macros []protocol.MacroSummary) string {
 }
 
 func formatMacroRun(result protocol.MacroRunResult) string {
-	return fmt.Sprintf("OK: ran macro %q (%d steps, %.1fs)\n",
-		result.Macro, result.StepsRun, float64(result.DurationMs)/1000)
+	resumed := ""
+	if result.ResumedFrom > 0 {
+		resumed = fmt.Sprintf(", resumed from step %d", result.ResumedFrom)
+	}
+	return fmt.Sprintf("OK: ran macro %q (%d steps, %.1fs%s)\n",
+		result.Macro, result.StepsRun, float64(result.DurationMs)/1000, resumed)
 }
 
 func formatMacroStepFailure(failure protocol.MacroStepFailure) string {
 	out := fmt.Sprintf("MACRO STEP FAILED: macro %q step %d: %s\n",
 		failure.Macro, failure.FailedStepID, failure.Reason)
+	if failure.DeadLetter != "" {
+		out += fmt.Sprintf("dead letter: %s\n", failure.DeadLetter)
+	}
+	if len(failure.Compensated) > 0 {
+		out += fmt.Sprintf("compensated: %v\n", failure.Compensated)
+	}
 	if failure.CurrentSnapshot != "" {
 		out += failure.CurrentSnapshot
 		if !strings.HasSuffix(failure.CurrentSnapshot, "\n") {

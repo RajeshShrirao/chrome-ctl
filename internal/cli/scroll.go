@@ -18,7 +18,7 @@ const (
 )
 
 func newScrollCmd() *cobra.Command {
-	var toSelector string
+	var toSelector, seed string
 	cmd := &cobra.Command{
 		Use:   "scroll <down|up> [amount] | scroll --to <selector>",
 		Short: "Scroll the page down or up, or jump directly to a selector",
@@ -28,6 +28,7 @@ func newScrollCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			params.Seed = seed
 
 			var result protocol.ActionScrollResult
 			if err := callRPCWithTimeout(cmd, protocol.MethodActionScroll, params, &result, scrollTimeout); err != nil {
@@ -38,6 +39,7 @@ func newScrollCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&toSelector, "to", "", "Jump scroll directly to element matching CSS selector")
+	cmd.Flags().StringVar(&seed, "seed", "", "Deterministic seed for scroll ticks and reading pauses")
 	return cmd
 }
 

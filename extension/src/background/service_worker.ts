@@ -6,7 +6,7 @@ import type {
   ContentResponse,
   ContentSnapRequest,
 } from "../shared/content.js";
-import { ErrorCodes, Methods, TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
+import { CAPABILITIES, ErrorCodes, Methods, PROTOCOL_VERSION, TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
 import type {
   ActionClickResult,
   ActionPressResult,
@@ -133,6 +133,8 @@ async function buildStatus(): Promise<ExtensionStatusResult> {
         }
       : null,
     debuggerAttached: await isDebuggerAttached(active?.id),
+    protocolVersion: PROTOCOL_VERSION,
+    capabilities: [...CAPABILITIES],
   };
 }
 
@@ -682,7 +684,6 @@ interface SnapRequestOptions {
 }
 
 const lastSnapElements = new Map<number, SnapElement[]>();
-const lastSnapUrl = new Map<number, string>();
 
 const SNAP_SETTLE_MS = 250;
 const URL_PROBE_MS = 25;
@@ -744,6 +745,7 @@ async function buildSnapResult(
   }
 
   const { docId, snapshotId, omitted, viewport, elements, lines, framesSummary } = response.snap;
+  const removed = response.snap.removed ?? [];
   const headerLines: string[] = [
     `SNAP ${snapshotId} | TAB [${tabId}] ${current.title ?? ""} | ${current.url ?? ""}`,
     `VIEWPORT: ${Math.round(viewport.scrollY)}-${Math.round(viewport.scrollY + viewport.viewportHeight)}px of ${Math.round(viewport.totalHeight)}px (${Math.round(viewport.percent)}%)`,
@@ -759,35 +761,48 @@ async function buildSnapResult(
   const lastElements = lastSnapElements.get(tabId);
   lastSnapElements.set(tabId, elements);
 
-  if (options.diff === true && lastElements && lastElements.length > 0 && current.url === lastSnapUrl.get(tabId)) {
+  const sameDocument = lastSnap.get(tabId)?.docId === docId;
+  if (options.diff === true && sameDocument && lastElements && lastElements.length > 0) {
     const oldById = new Map<number, SnapElement>();
     for (const el of lastElements) {
       oldById.set(el.id, el);
     }
     const added: string[] = [];
     const changed: string[] = [];
+    const gone: string[] = [];
 
     for (const el of elements) {
       const old = oldById.get(el.id);
       if (!old) {
         added.push(`+ [${el.id}] <${el.tag}> "${el.label}" @${el.x},${el.y}`);
-      } else if (old.label !== el.label || old.x !== el.x || old.y !== el.y) {
+      } else if (
+        el.change === "updated" ||
+        el.change === "moved" ||
+        old.label !== el.label ||
+        old.x !== el.x ||
+        old.y !== el.y
+      ) {
         changed.push(`~ [${el.id}] <${el.tag}> "${el.label}" @${el.x},${el.y}`);
       }
     }
+    for (const id of removed) {
+      const old = oldById.get(id);
+      gone.push(old ? `- [${id}] <${old.tag}> "${old.label}"` : `- [${id}]`);
+    }
 
-    if (added.length > 0 || changed.length > 0) {
+    if (added.length > 0 || changed.length > 0 || gone.length > 0) {
       const diffLines = [
         ...headerLines,
-        `DIFF (+${added.length} added, ~${changed.length} changed):`,
+        `DIFF (+${added.length} added, ~${changed.length} changed, -${gone.length} removed):`,
         ...added,
         ...changed,
+        ...gone,
       ];
       formattedText = diffLines.join("\n");
     } else {
       formattedText = [
         ...headerLines,
-        `DIFF: no interactive elements added or changed.`,
+        `DIFF: no interactive elements added, changed, or removed.`,
       ].join("\n");
     }
   } else {
@@ -799,7 +814,6 @@ async function buildSnapResult(
         : []),
     ].join("\n");
   }
-  lastSnapUrl.set(tabId, current.url ?? "");
 
   lastSnap.set(tabId, { docId, snapshotId });
 
@@ -814,6 +828,7 @@ async function buildSnapResult(
     elements,
     formattedText,
     framesSummary,
+    removed,
   };
 }
 
@@ -1137,10 +1152,12 @@ async function handleActionClick(
     at === null
       ? await click(tabId, query, {
           doubleClick: params.doubleClick === true,
+          seed: typeof params.seed === "string" ? params.seed : undefined,
           sendContent: sendWithIdentity,
         })
       : await clickAt(tabId, at.x, at.y, {
           doubleClick: params.doubleClick === true,
+          seed: typeof params.seed === "string" ? params.seed : undefined,
           sendContent: sendWithIdentity,
         });
 
@@ -1184,6 +1201,7 @@ async function handleActionType(
   const result = await typeText(tabId, id, text, {
     enter: params.enter === true,
     typoRate: typeof params.typoRate === "number" ? params.typoRate : undefined,
+    seed: typeof params.seed === "string" ? params.seed : undefined,
     sendContent: sendWithIdentity,
   });
 
@@ -1204,7 +1222,12 @@ async function handleActionPress(
     ? params.modifiers.filter((value): value is string => typeof value === "string")
     : [];
 
-  return press(tabId, key, modifiers);
+  return press(
+    tabId,
+    key,
+    modifiers,
+    typeof params.seed === "string" ? params.seed : undefined,
+  );
 }
 
 async function handleActionScroll(
@@ -1218,6 +1241,7 @@ async function handleActionScroll(
   if (typeof params.toSelector === "string" && params.toSelector.trim() !== "") {
     return scroll(tabId, {
       toSelector: params.toSelector.trim(),
+      seed: typeof params.seed === "string" ? params.seed : undefined,
       sendContent: sendWithIdentity,
     });
   }
@@ -1231,6 +1255,7 @@ async function handleActionScroll(
   return scroll(tabId, {
     direction: params.direction,
     amount,
+    seed: typeof params.seed === "string" ? params.seed : undefined,
     sendContent: sendWithIdentity,
   });
 }

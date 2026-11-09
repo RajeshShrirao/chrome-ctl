@@ -148,6 +148,47 @@ test("hierarchy flattening keeps the outermost candidate", () => {
   assert.equal(snap.elements[0].id, 1);
 });
 
+test("each element is measured at most once per snapshot", () => {
+  const doc = makeDoc('<button id="one">One</button>');
+  const button = doc.getElementById("one")!;
+
+  let rectCalls = 0;
+  Object.defineProperty(button, "getBoundingClientRect", {
+    configurable: true,
+    value: () => {
+      rectCalls += 1;
+      return {
+        x: 10,
+        y: 10,
+        left: 10,
+        top: 10,
+        right: 110,
+        bottom: 40,
+        width: 100,
+        height: 30,
+        toJSON: () => ({}),
+      };
+    },
+  });
+
+  const snap = snapshot(doc, { all: true }, VIEW);
+  assert.equal(snap.elements.length, 1);
+  assert.equal(rectCalls, 1);
+});
+
+test("deep light-DOM nesting is not truncated by the composed-depth guard", () => {
+  resetLayout();
+  const depth = 200;
+  const doc = makeDoc(
+    `${"<div>".repeat(depth)}<button id="deep">Deep</button>${"</div>".repeat(depth)}`,
+  );
+  layout(doc, "button");
+
+  const snap = snapshot(doc, { all: true }, VIEW);
+  assert.equal(snap.elements.length, 1);
+  assert.equal(snap.elements[0].label, "Deep");
+});
+
 test("visibility and 4px culling", () => {
   resetLayout();
   const doc = makeDoc(`

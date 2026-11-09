@@ -19,12 +19,22 @@
      "method": "system.ready",
      "params": {
        "version": "1.0.0",
+       "protocolVersion": "2.0",
+       "capabilities": [
+         "snapshot.diff",
+         "scheduler.singleflight",
+         "macro.saga",
+         "humanizer.seed",
+         "protocol.codegen"
+       ],
        "daemonUptimeSec": 42,
        "attachedTabs": []
      }
    }
    ```
 4. If token is invalid or missing, daemon responds with HTTP `401 Unauthorized` and terminates the TCP socket immediately.
+
+`protocolVersion` and `capabilities` are also reported by `session.status` as `protocolVersion`/`capabilities` (daemon) and `extensionProtocolVersion`/`extensionCapabilities` (extension). A client should feature-detect on capability names instead of comparing version strings. The contract in [PROTOCOL_CONTRACT.md](PROTOCOL_CONTRACT.md) is generated from `internal/protocol/contract.json`; `go generate ./internal/protocol` refreshes the Go, TypeScript, and markdown artifacts.
 
 ### 1.2 Heartbeat (Liveness Keep-Alive)
 * The Extension's Offscreen Document sends a ping every **15 seconds**:
@@ -291,7 +301,7 @@ Scans visible DOM and extracts the ultra-compact indexed element map.
   }
   ```
 
-IDs are unique for the life of a document (`docId`) and never reused. Each snapshot increments `snapshotId`; the tag also appears as the `SNAP <n> |` prefix. `deep` adds rows, grid cells, and cursor-only candidates; `maxElements` caps the map (default 400) and `omitted` reports how many candidates were skipped. A footer line `OMITTED: n candidates` is appended when the cap is hit.
+IDs are stable for the life of a document (`docId`): re-snapping the same DOM nodes reuses their ids, and a re-rendered node with a unique fingerprint (role, accessible name, test id, tag, ancestry) keeps its id too. New ids are never reused. Each snapshot increments `snapshotId`; the tag also appears as the `SNAP <n> |` prefix. Each element also reports `change` (`added`, `same`, `updated`, or `moved`) relative to the previous snapshot, and the result carries `removed` with the ids that left the document. `deep` adds rows, grid cells, and cursor-only candidates; `maxElements` caps the map (default 400) and `omitted` reports how many candidates were skipped. A footer line `OMITTED: n candidates` is appended when the cap is hit.
 
 #### `page.read`
 Extracts readable markdown, tables, or links from the page or a specific container.
@@ -368,7 +378,8 @@ Executes Bézier trajectory mouse movement and dispatches trusted mouse click ev
     "id"?: 2,
     "at"?: { "x": 542, "y": 138 },
     "doubleClick"?: false,
-    "snap"?: true
+    "snap"?: true,
+    "seed"?: "8f14e45fceea167a"
   }
   ```
 * Exactly one of `id` or `at` is required. `at` is an exact viewport point in CSS pixels, as printed by `page.snap`; it is not a screenshot pixel.
@@ -381,11 +392,18 @@ Executes Bézier trajectory mouse movement and dispatches trusted mouse click ev
     "coordinates": { "x": 542, "y": 138 },
     "landedOn": "<button> \"Start a post\"",
     "urlChanged": false,
+    "seed": "8f14e45fceea167a",
     "durationMs": 340,
     "snapshot"?: { /* Included if snap == true */ }
   }
   ```
 `target` is omitted for coordinate clicks. `landedOn` names the topmost element at the click point and `urlChanged` compares the tab URL ~150 ms after dispatch. Both describe what the input hit, not whether the application accepted it.
+
+#### Deterministic input replay (`humanizer.seed`)
+
+`action.click`, `action.type`, `action.press`, and `action.scroll` accept an optional `seed`. When omitted, the extension creates a crypto-seeded xoshiro128** stream; the seed that was used is returned in the result. Passing that seed back replays the same landing point, minimum-jerk cursor path, typing cadence, and scroll ticks.
+
+This exists for reliability and QA (reproducing a flaky interaction), not to defeat bot detection. It does not bypass any site control, and use remains subject to the target site's terms. Feature-detect with the `humanizer.seed` capability; daemons and extensions without it ignore the parameter and omit the result field.
 
 #### `action.type`
 Focuses target element and dispatches cadence keystrokes with variable delays and optional typos.
@@ -397,7 +415,8 @@ Focuses target element and dispatches cadence keystrokes with variable delays an
     "text": "Hello world! We are launching today.",
     "enter"?: true,
     "typoRate"?: 0.02,
-    "snap"?: false
+    "snap"?: false,
+    "seed"?: "8f14e45fceea167a"
   }
   ```
 * **Result:**
@@ -410,7 +429,8 @@ Focuses target element and dispatches cadence keystrokes with variable delays an
     "verified": true,
     "verification": "exact",
     "readBack": "Hello world! We are launching today.",
-    "stateDelta": "[6] <button:submit> \"Send\" is now (enabled)"
+    "stateDelta": "[6] <button:submit> \"Send\" is now (enabled)",
+    "seed": "8f14e45fceea167a"
   }
   ```
 `verification` is `exact`, `normalized` (whitespace-only difference), `empty`, or `mismatch`. The value is read back before any `enter` keystroke, with retries over 0/120/300 ms to absorb framework commit latency. `verified: false` with `empty` usually means a readonly or fully controlled field rejected the input.
@@ -421,10 +441,11 @@ Dispatches a trusted individual key press (`Enter`, `Tab`, `Escape`, `ArrowDown`
   ```json
   {
     "key": "Enter",
-    "modifiers"?: ["Control"]
+    "modifiers"?: ["Control"],
+    "seed"?: "8f14e45fceea167a"
   }
   ```
-* **Result:** `{ "success": true, "key": "Enter" }`
+* **Result:** `{ "success": true, "key": "Enter", "seed"?: "8f14e45fceea167a" }`
 
 #### `action.scroll`
 Executes momentum wheel scrolling with micro-pauses.
@@ -432,7 +453,8 @@ Executes momentum wheel scrolling with micro-pauses.
   ```json
   {
     "direction": "down",
-    "amount": 0.8
+    "amount": 0.8,
+    "seed"?: "8f14e45fceea167a"
   }
   ```
 * **Result:**
@@ -440,7 +462,8 @@ Executes momentum wheel scrolling with micro-pauses.
   {
     "scrolledPixels": 720,
     "newScrollY": 720,
-    "viewportPercent": 38
+    "viewportPercent": 38,
+    "seed": "8f14e45fceea167a"
   }
   ```
 
@@ -666,3 +689,4 @@ The service worker caches `{docId, snapshotId}` from the latest `page.snap` per 
 | **`-32009`** | `DISPATCHED_UNCONFIRMED` | The request reached the extension but no acknowledgement arrived before the deadline. The side effect may have occurred; data carries `{ method, timeoutMs }`. |
 | **`-32010`** | `SNAPSHOT_STALE` | The page navigated or reloaded since the snapshot that produced the referenced ID; take a new snapshot. |
 | **`-32011`** | `FEATURE_DISABLED` | The method is disabled on this daemon (currently `page.eval` with `--no-eval`). |
+| **`-32012`** | `BUSY` | The per-tab scheduler queue is full or a mutation is in progress; retry shortly. |

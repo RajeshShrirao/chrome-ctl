@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 import {
   clickLanding,
+  createRng,
   keyDefinition,
+  minimumJerk,
   modifiersMask,
   planMousePath,
   planScroll,
@@ -265,4 +267,114 @@ test("keyDefinition rejects unknown multi-character keys", () => {
   assert.throws(() => keyDefinition("F13"), /unknown key: F13/);
   assert.throws(() => keyDefinition("Hyper"), /unknown key: Hyper/);
   assert.throws(() => keyDefinition(""), /unknown key/);
+});
+
+test("minimumJerk is a monotone 0-to-1 profile with zero end velocity", () => {
+  assert.equal(minimumJerk(0), 0);
+  assert.equal(minimumJerk(1), 1);
+  assert.ok(Math.abs(minimumJerk(0.5) - 0.5) < 1e-9);
+  let previous = -Infinity;
+  for (let tau = 0; tau <= 1.0001; tau += 0.01) {
+    const value = minimumJerk(tau);
+    assert.ok(value >= previous - 1e-9, `not monotone at tau=${tau}`);
+    previous = value;
+  }
+});
+
+test("createRng is deterministic per seed and differs across seeds", () => {
+  const draw = (seed: string): number[] => {
+    const rng = createRng(seed);
+    return Array.from({ length: 8 }, () => rng.gaussian());
+  };
+  assert.deepEqual(draw("replay-me"), draw("replay-me"));
+  assert.notDeepEqual(draw("replay-me"), draw("other-seed"));
+
+  const rng = createRng("abcdef0123456789abcdef0123456789");
+  assert.equal(rng.seed(), "abcdef0123456789abcdef0123456789");
+});
+
+test("planners return the seed that reproduces them", () => {
+  const from = { x: 10, y: 20 };
+  const to = { x: 400, y: 300 };
+
+  const pathA = planMousePath(from, to, 50, createRng("path-seed"));
+  const pathB = planMousePath(from, to, 50, createRng("path-seed"));
+  assert.equal(pathA.seed, "path-seed");
+  assert.deepEqual(pathA.points, pathB.points);
+  assert.equal(pathA.durationMs, pathB.durationMs);
+
+  const typingA = planTyping("hello world", 0.05, createRng("type-seed"));
+  const typingB = planTyping("hello world", 0.05, createRng("type-seed"));
+  assert.equal(typingA.seed, "type-seed");
+  assert.deepEqual(typingA.steps, typingB.steps);
+  assert.equal(typingA.typosInjected, typingB.typosInjected);
+
+  const scrollA = planScroll(1800, createRng("scroll-seed"));
+  const scrollB = planScroll(1800, createRng("scroll-seed"));
+  assert.equal(scrollA.seed, "scroll-seed");
+  assert.deepEqual(scrollA.ticks, scrollB.ticks);
+});
+
+test("planTyping keeps grapheme clusters and marks them as insert steps", () => {
+  const combining = planTyping("e\u0301", 0);
+  assert.equal(combining.steps.length, 1);
+  assert.equal(combining.steps[0]!.value, "e\u0301");
+  assert.equal(combining.steps[0]!.kind, "insert");
+
+  const emoji = planTyping("\u{1F469}\u200D\u{1F4BB}", 1);
+  assert.equal(emoji.steps.length, 1);
+  assert.equal(emoji.steps[0]!.kind, "insert");
+  assert.equal(emoji.typosInjected, 0);
+});
+
+/** Two-sample Kolmogorov-Smirnov statistic. */
+function ksStatistic(a: number[], b: number[]): number {
+  const left = [...a].sort((x, y) => x - y);
+  const right = [...b].sort((x, y) => x - y);
+  let i = 0;
+  let j = 0;
+  let statistic = 0;
+  while (i < left.length && j < right.length) {
+    const value = Math.min(left[i]!, right[j]!);
+    while (i < left.length && left[i]! <= value) i += 1;
+    while (j < right.length && right[j]! <= value) j += 1;
+    statistic = Math.max(statistic, Math.abs(i / left.length - j / right.length));
+  }
+  return statistic;
+}
+
+function ksCritical(n: number, m: number, alpha = 0.05): number {
+  // Asymptotic two-sample critical value: c(alpha) * sqrt((n+m)/(n*m)).
+  const c = alpha === 0.05 ? 1.36 : 1.63;
+  return c * Math.sqrt((n + m) / (n * m));
+}
+
+function flightTimes(prefix: string, samples: number): number[] {
+  const values: number[] = [];
+  for (let index = 0; index < samples; index += 1) {
+    const plan = planTyping("x", 0, createRng(`${prefix}-${index}`));
+    values.push(plan.steps[0]!.delayMs);
+  }
+  return values;
+}
+
+test("flight times match the same log-normal across seeds (two-sample KS)", () => {
+  const first = flightTimes("flight-a", 800);
+  const second = flightTimes("flight-b", 800);
+  const statistic = ksStatistic(first, second);
+  assert.ok(
+    statistic < ksCritical(first.length, second.length),
+    `KS=${statistic.toFixed(4)} rejected equal distributions`,
+  );
+});
+
+test("flight times reject a uniform distribution (two-sample KS)", () => {
+  const flights = flightTimes("flight-uniform", 800);
+  const uniformRng = createRng("uniform-reference");
+  const uniform = Array.from({ length: 800 }, () => uniformRng.next() * 300);
+  const statistic = ksStatistic(flights, uniform);
+  assert.ok(
+    statistic > ksCritical(flights.length, uniform.length),
+    `KS=${statistic.toFixed(4)} failed to distinguish log-normal from uniform`,
+  );
 });

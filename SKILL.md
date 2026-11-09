@@ -84,7 +84,7 @@ chrome-ctl wait --network               # let the app catch up
 chrome-ctl read                         # only once the page is what you expect
 ```
 
-- **Instant Ballistic Clicks (<60ms)**: By default, clicks execute via 1–2 point ballistic human movement and 20–35ms press/release. No artificial delays or laggy multi-second curves.
+- **Natural, replayable motion**: Clicks follow a minimum-jerk cursor path with mean-reverting tremor and a slight overshoot only on far targets; press/release is 20–35ms, so short moves stay brisk. Every `click`/`type`/`press`/`scroll` result includes a `seed`; pass it back to replay the same landing point, path, and cadence exactly. Seeds are for reliability and QA, not for evading a site's controls.
 - **Direct 1-Shot Target Clicking**: You don't need to run `snap` before clicking! Run `click "Text"`, `click "css=#selector"`, or `click <id>`. If targeting by text or CSS, `chrome-ctl` resolves the target directly in the page, saving an entire conversation turn and ~1,500 tokens.
 - **Zero-Token Consequence Receipts**: The click receipt automatically proves the immediate consequence inline (e.g. `-> selected (•)`, `-> unselected ( )`, `-> opened dialog "Delete"`, `-> navigated to ...`). Do NOT waste tokens running `snap` after a click if the consequence receipt already confirms your action worked.
 - `--snap` after `click`/`type` emits a compact **differential snapshot** (`DIFF (+N added, ~M changed)`) showing only what mutated, saving ~90% of tokens compared to a full DOM dump.
@@ -192,7 +192,7 @@ Append one JSON object per step: `{"goal":…,"url":…,"snap":"SNAP 4 | TAB [81
 Recipes:
 
 - **New agent session, work already started.** `status` → require `CONNECTED` → `window ensure` → `window list` → `url` → `snap`. Re-derive your position from the URL and the fresh snapshot; never reuse an ID from the previous session. Read the journal last line for intent.
-- **Interrupted `bulk`.** Re-run the **same input list and the same `--out`** with `--resume`; already-`ok` URLs are skipped. Read `[stopped: …]` from the previous summary first — a short page or three identical pages means a rate limit or login wall, and resuming without fixing it just scrapes garbage.
+- **Interrupted `bulk`.** Re-run the **same input list and the same `--out`** with `--resume`; already-`ok` URLs are skipped. Read `[stopped: …]` from the previous summary first — a short page or three near-duplicate pages means a rate limit or login wall, and resuming without fixing it just scrapes garbage.
 - **Broken macro.** Follow the `MACRO STEP FAILED` row in [Recover](#recover), then re-save under the same name.
 - **Chrome restarted.** `window ensure` replaces the stale window id; the pages inside it are gone, so re-`open` from the journal's last URL. Check `window list` for `(minimized)` before any `shot` or `rec stop`.
 - **Daemon died.** `daemon --start` → `status` must show `CONNECTED` (the extension re-pairs unaided) → `window ensure` → `snap`.
@@ -311,7 +311,7 @@ chrome-ctl bulk urls.txt --out ./pages --limit 20 --min-bytes 500 --stop-on-empt
 
 - One item per line; blanks and `#` comments are ignored; `-` reads stdin. `--template` URL-escapes each item into `{{item}}`.
 - Items navigate in the automation tab; per item: navigate, network-quiet wait (falls back to DOM idle), jitter `--wait`, `read`. Files are `NNN-slug.md`; every attempt appends to `manifest.jsonl`.
-- `--resume` skips URLs already marked `ok`. `--stop-on-empty` stops below `--min-bytes` (300) and `--max-repeats` (3) consecutive identical pages stop the run — both usually mean a rate limit or a login wall. `--network=false` switches to DOM-idle waiting; `--quiet` suppresses per-item stderr progress.
+- `--resume` skips URLs already marked `ok`. `--stop-on-empty` stops below `--min-bytes` (300) and `--max-repeats` (3) consecutive near-duplicate pages stop the run — both usually mean a rate limit or a login wall. Transient failures retry with jittered backoff; `--network=false` switches to DOM-idle waiting; `--quiet` suppresses per-item stderr progress.
 - stdout carries only the summary and `FAIL` lines. Check `manifest.jsonl` for detail.
 - A shell loop works the same way without `bulk` — cap the list, stop on repeated content hashes, keep the jitter:
 

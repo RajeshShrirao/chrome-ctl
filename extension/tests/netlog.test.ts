@@ -113,6 +113,56 @@ test("a navigation restarts the quiet window", () => {
   assert.equal(log.tracker.isQuiet(10_500, 500), true);
 });
 
+test("subscriptions fire on every request lifecycle change and unsubscribe stops them", () => {
+  const log = new NetLog();
+  let calls = 0;
+  const unsubscribe = log.subscribe(() => {
+    calls += 1;
+  });
+
+  log.requestStart("r1", "https://example.test/a", "GET", "XHR", 1_000);
+  assert.equal(calls, 1);
+  log.response("r1", 200, 1_010);
+  assert.equal(calls, 2);
+  log.finish("r1", 1_020);
+  assert.equal(calls, 3);
+  log.noteNavigation(1_030);
+  assert.equal(calls, 4);
+
+  unsubscribe();
+  log.requestStart("r2", "https://example.test/b", "GET", "XHR", 1_040);
+  assert.equal(calls, 4);
+});
+
+test("nextQuietAt schedules activity plus quiet window, or long-poll exclusion", () => {
+  const log = new NetLog();
+  log.requestStart("r1", "https://example.test/stream", "GET", "Fetch", 1_000);
+
+  // Activity at 1000 + 500ms quiet = 1500; the request becomes a long poll at 3000.
+  assert.equal(log.nextQuietAt(1_000, 500, 2_000), 3_000);
+  assert.equal(log.nextQuietAt(2_500, 500, 2_000), 3_000);
+  // A longer long-poll threshold pushes the deadline out.
+  assert.equal(log.nextQuietAt(2_500, 500, 5_000), 6_000);
+  // Once excluded, the remaining constraint is the last activity window.
+  assert.equal(log.nextQuietAt(3_200, 500, 2_000), 3_200);
+});
+
+test("a navigation epoch ignores completions from the previous document", () => {
+  const log = new NetLog();
+  log.requestStart("old", "https://example.test/old", "GET", "Document", 1_000);
+  log.noteNavigation(2_000);
+  log.requestStart("new", "https://example.test/new", "GET", "Fetch", 2_100);
+
+  assert.equal(log.inflight, 2);
+  assert.equal(log.inflightExcludingLongPoll(2_200, 2_000), 1);
+
+  log.finish("old", 2_300);
+  assert.equal(log.inflightExcludingLongPoll(2_300, 2_000), 1);
+
+  log.finish("new", 2_400);
+  assert.equal(log.inflightExcludingLongPoll(2_400, 2_000), 0);
+});
+
 test("inflightExcludingLongPoll ignores pending requests older than longPollMs", () => {
   assert.equal(DEFAULT_LONG_POLL_MS, 2_000);
   const log = new NetLog();

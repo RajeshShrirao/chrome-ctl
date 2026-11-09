@@ -16,6 +16,7 @@ const clickTimeout = 70 * time.Second
 func newClickCmd() *cobra.Command {
 	var snap, double bool
 	var timeout time.Duration
+	var seed string
 	cmd := &cobra.Command{
 		Use:   "click <id | text | css=selector>",
 		Short: "Click an element by id, visible text, or CSS selector",
@@ -26,6 +27,7 @@ func newClickCmd() *cobra.Command {
 				DoubleClick: double,
 				Snap:        snap,
 				TimeoutMs:   int(timeout.Milliseconds()),
+				Seed:        seed,
 			}
 
 			if id, err := strconv.Atoi(arg); err == nil {
@@ -56,6 +58,7 @@ func newClickCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&snap, "snap", false, "Include a page snapshot after clicking")
 	cmd.Flags().BoolVar(&double, "double", false, "Double-click instead of a single click")
 	cmd.Flags().DurationVar(&timeout, "timeout", clickTimeout, "Timeout for the click operation")
+	cmd.Flags().StringVar(&seed, "seed", "", "Deterministic seed for humanized cursor trajectory and landing point")
 	return cmd
 }
 

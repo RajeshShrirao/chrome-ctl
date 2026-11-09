@@ -2,7 +2,9 @@ import { CONTENT_CHANNEL, READ_MAX_CHARS } from "../shared/content.ts";
 import type { ContentRequest, ContentResponse, SnapPayload } from "../shared/content.ts";
 import type { MacroTarget } from "../shared/protocol.js";
 import { buildDescriptor, resolveTarget } from "./describe.ts";
-import { snapshot } from "./dom.ts";
+import { formatSnapLines, snapshot } from "./dom.ts";
+import { applyIdentity, emptyIdentity } from "./identity.ts";
+import type { IdentityState } from "./identity.ts";
 import { extractFormState } from "./forms.ts";
 import {
   buildAttrPayload,
@@ -34,6 +36,9 @@ interface IndexerGlobal {
   __chromeCtlSnapshotId?: number;
   /** Identity of this content-script document; a navigation produces a new one. */
   __chromeCtlDocId?: string;
+  /** Stable ids and change tracking for the current document. */
+  __chromeCtlIdentity?: IdentityState;
+  __chromeCtlIdentityDocId?: string;
 }
 
 const scope = window as unknown as Window & IndexerGlobal;
@@ -134,29 +139,57 @@ function describeSnap(request: ContentRequest & { type: "snap" }): SnapPayload {
     startId: state.nextId,
   });
 
+  const snapshotId = state.snapshotId + 1;
+  const applied = applyIdentity(
+    result.elements,
+    result.byId,
+    identityState(state.docId),
+    snapshotId,
+  );
+
   // Merge, never replace: ids stay valid until their element leaves the DOM.
+  // Stable ids overwrite the element a re-rendered node replaced.
   const index = indexMap();
   for (const [id, el] of index) {
     if (!el.isConnected) {
       index.delete(id);
     }
   }
-  for (const [id, el] of result.byId) {
+  for (const [id, el] of applied.byId) {
     index.set(id, el);
   }
 
-  scope.__chromeCtlNextId = result.nextId;
-  scope.__chromeCtlSnapshotId = state.snapshotId + 1;
+  scope.__chromeCtlIdentity = applied.state;
+  // Allocate above the highest exposed id so culled elements keep theirs and
+  // discarded minted ids (from reused slots) can be recycled safely.
+  let highest = 0;
+  for (const id of applied.state.records.keys()) {
+    if (id > highest) {
+      highest = id;
+    }
+  }
+  scope.__chromeCtlNextId = highest + 1;
+  scope.__chromeCtlSnapshotId = snapshotId;
 
   return {
     docId: state.docId,
-    snapshotId: state.snapshotId + 1,
+    snapshotId,
     omitted: result.omitted,
     viewport: result.viewport,
-    elements: result.elements,
-    lines: result.lines,
+    elements: applied.elements,
+    lines: formatSnapLines(applied.elements, applied.byId),
     framesSummary: result.framesSummary,
+    removed: applied.removed,
   };
+}
+
+/** Identity is per document; a navigation resets every id and fingerprint. */
+function identityState(docId: string): IdentityState {
+  if (scope.__chromeCtlIdentity === undefined || scope.__chromeCtlIdentityDocId !== docId) {
+    scope.__chromeCtlIdentity = emptyIdentity();
+    scope.__chromeCtlIdentityDocId = docId;
+  }
+  return scope.__chromeCtlIdentity;
 }
 
 function readTarget(request: ContentRequest & { type: "read" }): Element {

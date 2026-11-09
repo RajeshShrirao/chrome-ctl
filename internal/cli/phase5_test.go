@@ -154,6 +154,11 @@ func TestFormatMacroRun(t *testing.T) {
 	if got, want := formatMacroRun(result), "OK: ran macro \"lead_search\" (2 steps, 1.0s)\n"; got != want {
 		t.Errorf("formatMacroRun(1000ms) = %q, want %q", got, want)
 	}
+
+	result.ResumedFrom = 3
+	if got, want := formatMacroRun(result), "OK: ran macro \"lead_search\" (2 steps, 1.0s, resumed from step 3)\n"; got != want {
+		t.Errorf("formatMacroRun(resumed) = %q, want %q", got, want)
+	}
 }
 
 func TestFormatMacroStepFailure(t *testing.T) {
@@ -169,6 +174,15 @@ func TestFormatMacroStepFailure(t *testing.T) {
 	if got := formatMacroStepFailure(failure); got != want {
 		t.Errorf("formatMacroStepFailure() = %q, want %q", got, want)
 	}
+
+	failure.DeadLetter = "/tmp/run-1-dead-letter.json"
+	failure.Compensated = []int{2, 1}
+	wantWithSaga := "MACRO STEP FAILED: macro \"lead_search\" step 3: element not found\ndead letter: /tmp/run-1-dead-letter.json\ncompensated: [2 1]\nbutton \"Search\"\n"
+	if got := formatMacroStepFailure(failure); got != wantWithSaga {
+		t.Errorf("formatMacroStepFailure(deadLetter, compensated) = %q, want %q", got, wantWithSaga)
+	}
+	failure.DeadLetter = ""
+	failure.Compensated = nil
 
 	failure.CurrentSnapshot = "button \"Search\""
 	if got := formatMacroStepFailure(failure); got != want {
@@ -248,5 +262,16 @@ func TestPhase5CommandsRegistered(t *testing.T) {
 		if found, _, err := macro.Find([]string{sub}); err != nil || found.Name() != sub {
 			t.Errorf("macro.Find(%s) = %v, %v", sub, found, err)
 		}
+	}
+
+	runCmd, _, err := macro.Find([]string{"run"})
+	if err != nil {
+		t.Fatalf("macro.Find(run) = %v", err)
+	}
+	if runCmd.Flags().Lookup("run-id") == nil {
+		t.Error("macro run missing --run-id flag")
+	}
+	if runCmd.Flags().Lookup("resume") == nil {
+		t.Error("macro run missing --resume flag")
 	}
 }

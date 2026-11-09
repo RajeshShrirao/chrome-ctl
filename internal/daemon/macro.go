@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +20,6 @@ import (
 
 const (
 	macroResolveTimeoutMs = 3000
-	macroRetryAttempts    = 3
 )
 
 // macroRecorder holds the in-progress recording. The daemon records mirrored
@@ -38,8 +39,6 @@ type pendingMacroStep struct {
 	params json.RawMessage
 	target *protocol.MacroTarget
 }
-
-var conditionPattern = regexp.MustCompile(`(?s)^(.*?)\s*(==|!=)\s*''\s*$`)
 
 func (d *daemon) macroActive() bool {
 	d.macro.mu.Lock()
@@ -360,122 +359,158 @@ func (d *daemon) handleMacroRun(ctx context.Context, req protocol.Request) proto
 		}
 	}
 
+	runID := params.RunID
+	if runID == "" {
+		generated, err := newMacroRunID()
+		if err != nil {
+			return protocol.Failure(req.ID, protocol.ErrInternal, "generate run id: "+err.Error())
+		}
+		runID = generated
+	}
+
+	saga := macro.Saga{
+		Runner:   &macroRunner{d: d},
+		Journal:  macro.NewFileJournal(filepath.Join(d.macroDir(), ".runs")),
+		Breakers: d.macroBreakers,
+	}
 	start := time.Now()
-	stepsRun := 0
-	for i := range file.Steps {
-		step := file.Steps[i]
-
-		run, err := macroConditionAllows(step.Condition, vars, file.Parameters)
-		if err != nil {
-			return protocol.Failure(req.ID, protocol.ErrInvalidRequest, err.Error())
-		}
-		if !run {
-			continue
-		}
-
-		url, err := macro.Interpolate(step.URL, vars)
-		if err != nil {
-			return protocol.Failure(req.ID, protocol.ErrInvalidRequest, fmt.Sprintf("macro step %d: %v", macroStepID(step, i), err))
-		}
-		value, err := macro.Interpolate(step.Value, vars)
-		if err != nil {
-			return protocol.Failure(req.ID, protocol.ErrInvalidRequest, fmt.Sprintf("macro step %d: %v", macroStepID(step, i), err))
-		}
-
-		var resolved protocol.PageResolveResult
-		if step.Target != nil {
-			attempts := 1
-			if step.OnFailure == "retry_3x" {
-				attempts = macroRetryAttempts
-			}
-			reason := ""
-			found := false
-			for attempt := 0; attempt < attempts; attempt++ {
-				result, rpcErr := d.resolveMacroTarget(ctx, *step.Target)
-				if rpcErr == nil && result.ID > 0 {
-					resolved = result
-					found = true
-					break
-				}
-				if rpcErr != nil {
-					reason = rpcErr.Message
-				} else {
-					reason = fmt.Sprintf("element %q not found", macroTargetLabel(step.Target))
-				}
-			}
-			if !found {
-				label := macroTargetLabel(step.Target)
-				if label != "" {
-					reason = fmt.Sprintf("element %q not found", label)
-				} else if reason == "" {
-					reason = "target not found"
-				}
-				return d.macroStepFailure(ctx, req.ID, file.Name, step, i, len(file.Steps), reason)
-			}
-		}
-
-		method, payload, ok := macroActionRequest(step, resolved, url, value)
-		if !ok {
-			return protocol.Failure(req.ID, protocol.ErrInvalidRequest, fmt.Sprintf("unsupported action %q", step.Action))
-		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return protocol.Failure(req.ID, protocol.ErrInternal, "encode macro step params")
-		}
-		if _, rpcErr := d.forward(ctx, protocol.Request{
-			JSONRPC: protocol.JSONRPC,
-			Method:  method,
-			Params:  raw,
-		}); rpcErr != nil {
-			return d.macroStepFailure(ctx, req.ID, file.Name, step, i, len(file.Steps), rpcErr.Message)
-		}
-		stepsRun++
+	result, failure := saga.Run(ctx, file, vars, macro.RunOptions{RunID: runID, Resume: params.Resume})
+	if failure != nil {
+		return d.macroRunFailure(req.ID, file.Name, runID, failure)
 	}
 
 	return protocol.Success(req.ID, protocol.MacroRunResult{
-		Macro:      file.Name,
-		StepsRun:   stepsRun,
-		DurationMs: time.Since(start).Milliseconds(),
-		Completed:  true,
+		Macro:       file.Name,
+		RunID:       runID,
+		StepsRun:    result.StepsRun,
+		DurationMs:  time.Since(start).Milliseconds(),
+		Completed:   true,
+		ResumedFrom: result.ResumedFrom,
+		Checkpoint:  result.Checkpoint,
+		Compensated: result.Compensated,
 	})
 }
 
-func macroStepID(step protocol.MacroStep, index int) int {
-	if step.StepID > 0 {
-		return step.StepID
+func newMacroRunID() (string, error) {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
 	}
-	return index + 1
+	return hex.EncodeToString(raw[:]), nil
 }
 
-func macroConditionAllows(condition string, vars map[string]string, params []protocol.MacroParameter) (bool, error) {
-	condition = strings.TrimSpace(condition)
-	if condition == "" {
-		return true, nil
-	}
+// macroRunner adapts the daemon's forwarded RPCs to the saga contract.
+type macroRunner struct {
+	d *daemon
+}
 
-	scope := make(map[string]string, len(vars)+len(params))
-	for name, value := range vars {
-		scope[name] = value
-	}
-	for _, param := range params {
-		if _, ok := scope[param.Name]; !ok {
-			scope[param.Name] = ""
-		}
-	}
+func (r *macroRunner) Resolve(ctx context.Context, target protocol.MacroTarget) (protocol.PageResolveResult, *protocol.RPCError) {
+	return r.d.resolveMacroTarget(ctx, target)
+}
 
-	expanded, err := macro.Interpolate(condition, scope)
+func (r *macroRunner) Execute(ctx context.Context, method string, params any) *protocol.RPCError {
+	raw, err := json.Marshal(params)
 	if err != nil {
-		return false, fmt.Errorf("unsupported condition %q", condition)
+		return &protocol.RPCError{Code: protocol.ErrInternal, Message: "encode macro step params"}
 	}
-	match := conditionPattern.FindStringSubmatch(strings.TrimSpace(expanded))
-	if match == nil {
-		return false, fmt.Errorf("unsupported condition %q", condition)
+	_, rpcErr := r.d.forward(ctx, protocol.Request{
+		JSONRPC: protocol.JSONRPC,
+		Method:  method,
+		Params:  raw,
+	})
+	return rpcErr
+}
+
+// Observe reads the effect signature: URL, matching target count, and the
+// resolved element's value/checked/disabled state.
+func (r *macroRunner) Observe(ctx context.Context, resolvedID int, target *protocol.MacroTarget) (protocol.MacroEffect, error) {
+	snapCtx, cancel := context.WithTimeout(ctx, pageResolveTimeout)
+	defer cancel()
+	result, rpcErr := r.d.forward(snapCtx, protocol.Request{
+		JSONRPC: protocol.JSONRPC,
+		Method:  protocol.MethodPageSnap,
+		Params:  json.RawMessage(`{}`),
+	})
+	if rpcErr != nil {
+		return protocol.MacroEffect{}, errors.New(rpcErr.Message)
 	}
-	lhs := strings.TrimSpace(match[1])
-	if match[2] == "==" {
-		return lhs == "", nil
+	var snap protocol.SnapResult
+	if err := json.Unmarshal(result, &snap); err != nil {
+		return protocol.MacroEffect{}, err
 	}
-	return lhs != "", nil
+
+	effect := protocol.MacroEffect{URL: snap.URL}
+	if target != nil {
+		count := 0
+		for _, element := range snap.Elements {
+			if snapshotElementMatches(element, target) {
+				count++
+			}
+		}
+		effect.TargetCount = &count
+	}
+	for _, element := range snap.Elements {
+		if element.ID != resolvedID {
+			continue
+		}
+		effect.Value = element.Value
+		checked := strings.Contains(element.State, "checked")
+		disabled := strings.Contains(element.State, "disabled")
+		effect.Checked = &checked
+		effect.Disabled = &disabled
+	}
+
+	r.refineFromFormState(ctx, &effect, target)
+	return effect, nil
+}
+
+func (r *macroRunner) refineFromFormState(ctx context.Context, effect *protocol.MacroEffect, target *protocol.MacroTarget) {
+	if target == nil {
+		return
+	}
+	formCtx, cancel := context.WithTimeout(ctx, pageResolveTimeout)
+	defer cancel()
+	result, rpcErr := r.d.forward(formCtx, protocol.Request{
+		JSONRPC: protocol.JSONRPC,
+		Method:  protocol.MethodPageFormState,
+		Params:  json.RawMessage(`{}`),
+	})
+	if rpcErr != nil {
+		return
+	}
+	var form protocol.PageFormStateResult
+	if err := json.Unmarshal(result, &form); err != nil {
+		return
+	}
+	label := macroTargetLabel(target)
+	for _, control := range form.Controls {
+		if label == "" || control.Label != label {
+			continue
+		}
+		effect.Value = control.Value
+		checked := control.Checked
+		disabled := control.Disabled
+		effect.Checked = &checked
+		effect.Disabled = &disabled
+		return
+	}
+}
+
+func snapshotElementMatches(element protocol.SnapElement, target *protocol.MacroTarget) bool {
+	if target.Tag != "" && !strings.EqualFold(element.Tag, target.Tag) {
+		return false
+	}
+	if target.AriaLabel != "" && element.Label == target.AriaLabel {
+		return true
+	}
+	if target.Text != "" && element.Label == target.Text {
+		return true
+	}
+	return false
+}
+
+func (r *macroRunner) Snapshot(ctx context.Context) string {
+	return r.d.macroSnapshot(ctx)
 }
 
 func (d *daemon) resolveMacroTarget(ctx context.Context, target protocol.MacroTarget) (protocol.PageResolveResult, *protocol.RPCError) {
@@ -504,58 +539,30 @@ func (d *daemon) resolveMacroTarget(ctx context.Context, target protocol.MacroTa
 	return result, nil
 }
 
-func macroActionRequest(step protocol.MacroStep, resolved protocol.PageResolveResult, url, value string) (string, any, bool) {
-	options := step.Options
-	switch step.Action {
-	case "open":
-		return protocol.MethodTabOpen, protocol.TabOpenParams{URL: url}, true
-	case "click":
-		return protocol.MethodActionClick, protocol.ActionClickParams{
-			ID:          resolved.ID,
-			DoubleClick: options != nil && options.Double,
-		}, true
-	case "type":
-		return protocol.MethodActionType, protocol.ActionTypeParams{
-			ID:    resolved.ID,
-			Text:  value,
-			Enter: options != nil && options.Enter,
-		}, true
-	case "press":
-		var modifiers []string
-		if options != nil {
-			modifiers = options.Modifiers
-		}
-		return protocol.MethodActionPress, protocol.ActionPressParams{Key: value, Modifiers: modifiers}, true
-	case "scroll":
-		var direction string
-		var amount float64
-		if options != nil {
-			direction = options.Direction
-			amount = options.Amount
-		}
-		return protocol.MethodActionScroll, protocol.ActionScrollParams{Direction: direction, Amount: amount}, true
-	case "upload":
-		return protocol.MethodActionUpload, protocol.ActionUploadParams{ID: resolved.ID, FilePath: value}, true
-	default:
-		return "", nil, false
+func (d *daemon) macroRunFailure(id *string, macroName, runID string, failure *macro.RunFailure) protocol.Response {
+	message := "macro run failed"
+	if failure.StepID > 0 {
+		message = fmt.Sprintf("macro step %d failed", failure.StepID)
 	}
-}
-
-func (d *daemon) macroStepFailure(ctx context.Context, id *string, macroName string, step protocol.MacroStep, index, total int, reason string) protocol.Response {
-	stepID := macroStepID(step, index)
 	return protocol.Response{
 		JSONRPC: protocol.JSONRPC,
 		ID:      id,
 		Error: &protocol.RPCError{
 			Code:    protocol.ErrMacroStepFailed,
-			Message: fmt.Sprintf("macro step %d failed", stepID),
+			Message: message,
 			Data: protocol.MacroStepFailure{
 				Status:          "macro_step_failed",
 				Macro:           macroName,
-				FailedStepID:    stepID,
-				Reason:          reason,
-				CurrentSnapshot: d.macroSnapshot(ctx),
-				RemainingSteps:  total - index - 1,
+				RunID:           runID,
+				FailedStepID:    failure.StepID,
+				Reason:          failure.Reason,
+				Classification:  failure.Classification,
+				Attempts:        failure.Attempts,
+				CircuitOpen:     failure.CircuitOpen,
+				DeadLetter:      failure.DeadLetter,
+				Compensated:     failure.Compensated,
+				CurrentSnapshot: failure.Snapshot,
+				RemainingSteps:  failure.RemainingSteps,
 			},
 		},
 	}

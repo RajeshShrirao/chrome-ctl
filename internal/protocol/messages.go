@@ -1,63 +1,14 @@
+//go:generate go run ./cmd/protocolgen -contract contract.json -go methods_generated.go -ts ../../extension/src/shared/protocol.generated.ts -docs ../../docs/PROTOCOL_CONTRACT.md
+
 package protocol
 
 import "encoding/json"
 
 const JSONRPC = "2.0"
 
-const (
-	MethodSystemReady   = "system.ready"
-	MethodSystemPing    = "system.ping"
-	MethodSessionStatus = "session.status"
-	MethodWindowList    = "window.list"
-	MethodWindowCreate  = "window.create"
-	MethodWindowEnsure  = "window.ensure"
-	MethodWindowUse     = "window.use"
-	MethodWindowClose   = "window.close"
-	MethodTabList       = "tab.list"
-	MethodTabOpen       = "tab.open"
-	MethodTabSwitch     = "tab.switch"
-	MethodPageSnap      = "page.snap"
-	MethodPageRead      = "page.read"
-	MethodPageWait      = "page.wait"
-	MethodPageEval      = "page.eval"
-	MethodPageAttr      = "page.attr"
-	MethodPageNet       = "page.net"
-	MethodPageFormState = "page.formstate"
-	MethodActionClick   = "action.click"
-	MethodActionType    = "action.type"
-	MethodActionPress   = "action.press"
-	MethodActionScroll  = "action.scroll"
-	MethodActionUpload  = "action.upload"
-	MethodMediaShot     = "media.shot"
-	MethodMediaRecStart = "media.rec_start"
-	MethodMediaRecStop  = "media.rec_stop"
-	MethodMediaCapture  = "media.capture"
-	MethodAuthSSO       = "auth.sso"
-	MethodPageDescribe  = "page.describe"
-	MethodPageResolve   = "page.resolve"
-	MethodMacroStart    = "macro.start"
-	MethodMacroSave     = "macro.save"
-	MethodMacroList     = "macro.list"
-	MethodMacroRun      = "macro.run"
-)
-
-const (
-	ErrConnection             = -32000
-	ErrElementNotFound        = -32001
-	ErrElementNotInteractable = -32002
-	ErrTabNotFound            = -32003
-	ErrDebuggerDetached       = -32004
-	ErrSSOTimeout             = -32005
-	ErrUnauthorized           = -32006
-	ErrNavigationFailed       = -32007
-	ErrMacroStepFailed        = -32008
-	ErrDispatchedUnconfirmed  = -32009
-	ErrSnapshotStale          = -32010
-	ErrFeatureDisabled        = -32011
-	ErrMethodNotFound         = -32601
-	ErrInvalidRequest         = -32600
-	ErrInternal               = -32603
-)
+// Method names, error codes, capability names, and timeout budgets live in
+// contract.json and are generated into methods_generated.go and
+// extension/src/shared/protocol.generated.ts.
 
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -89,12 +40,18 @@ type ExtensionStatus struct {
 	ActiveTab        *ActiveTab `json:"activeTab"`
 	TabCount         int        `json:"tabCount"`
 	DebuggerAttached bool       `json:"debuggerAttached"`
+	ProtocolVersion  string     `json:"protocolVersion,omitempty"`
+	Capabilities     []string   `json:"capabilities,omitempty"`
 }
 
 type SessionStatus struct {
 	Status             string     `json:"status"`
 	ExtensionConnected bool       `json:"extensionConnected"`
 	Version            string     `json:"version"`
+	ProtocolVersion    string     `json:"protocolVersion,omitempty"`
+	Capabilities       []string   `json:"capabilities,omitempty"`
+	ExtensionVersion   string     `json:"extensionProtocolVersion,omitempty"`
+	ExtensionCaps      []string   `json:"extensionCapabilities,omitempty"`
 	UptimeSec          int64      `json:"uptimeSec"`
 	ActiveTab          *ActiveTab `json:"activeTab"`
 	TabCount           int        `json:"tabCount"`
@@ -102,9 +59,11 @@ type SessionStatus struct {
 }
 
 type SystemReadyParams struct {
-	Version         string `json:"version"`
-	DaemonUptimeSec int64  `json:"daemonUptimeSec"`
-	AttachedTabs    []int  `json:"attachedTabs"`
+	Version         string   `json:"version"`
+	ProtocolVersion string   `json:"protocolVersion,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+	DaemonUptimeSec int64    `json:"daemonUptimeSec"`
+	AttachedTabs    []int    `json:"attachedTabs"`
 }
 
 type PingParams struct {
@@ -232,6 +191,8 @@ type SnapElement struct {
 	W     int    `json:"w"`
 	H     int    `json:"h"`
 	Frame string `json:"frame,omitempty"`
+	// Change is added | same | updated | moved relative to the previous snapshot.
+	Change string `json:"change,omitempty"`
 }
 
 type SnapResult struct {
@@ -245,6 +206,8 @@ type SnapResult struct {
 	FormattedText string        `json:"formattedText"`
 	Omitted       int           `json:"omitted,omitempty"`
 	FramesSummary string        `json:"framesSummary,omitempty"`
+	// Removed holds ids that left the document since the previous snapshot.
+	Removed []int `json:"removed,omitempty"`
 }
 
 type PageReadParams struct {
@@ -287,6 +250,7 @@ type ActionClickParams struct {
 	DoubleClick bool               `json:"doubleClick,omitempty"`
 	Snap        bool               `json:"snap,omitempty"`
 	TimeoutMs   int                `json:"timeoutMs,omitempty"`
+	Seed        string             `json:"seed,omitempty"`
 }
 
 type ActionTarget struct {
@@ -308,6 +272,7 @@ type ActionClickResult struct {
 	LandedOn    string             `json:"landedOn,omitempty"`
 	URLChanged  bool               `json:"urlChanged,omitempty"`
 	Consequence string             `json:"consequence,omitempty"`
+	Seed        string             `json:"seed,omitempty"`
 	DurationMs  int                `json:"durationMs"`
 	DispatchMs  int                `json:"dispatchMs,omitempty"`
 	SettleMs    int                `json:"settleMs,omitempty"`
@@ -321,6 +286,7 @@ type ActionTypeParams struct {
 	Enter    bool     `json:"enter,omitempty"`
 	TypoRate *float64 `json:"typoRate,omitempty"`
 	Snap     bool     `json:"snap,omitempty"`
+	Seed     string   `json:"seed,omitempty"`
 }
 
 type ActionTypeResult struct {
@@ -332,6 +298,7 @@ type ActionTypeResult struct {
 	Verified      bool        `json:"verified"`
 	Verification  string      `json:"verification,omitempty"`
 	ReadBack      string      `json:"readBack,omitempty"`
+	Seed          string      `json:"seed,omitempty"`
 	Snapshot      *SnapResult `json:"snapshot,omitempty"`
 }
 
@@ -339,11 +306,13 @@ type ActionPressParams struct {
 	TabID     *int     `json:"tabId,omitempty"`
 	Key       string   `json:"key"`
 	Modifiers []string `json:"modifiers,omitempty"`
+	Seed      string   `json:"seed,omitempty"`
 }
 
 type ActionPressResult struct {
 	Success bool   `json:"success"`
 	Key     string `json:"key"`
+	Seed    string `json:"seed,omitempty"`
 }
 
 type ActionScrollParams struct {
@@ -351,6 +320,7 @@ type ActionScrollParams struct {
 	Direction  string  `json:"direction,omitempty"`
 	Amount     float64 `json:"amount,omitempty"`
 	ToSelector string  `json:"toSelector,omitempty"`
+	Seed       string  `json:"seed,omitempty"`
 }
 
 type ActionScrollResult struct {
@@ -359,6 +329,7 @@ type ActionScrollResult struct {
 	ViewportPercent float64 `json:"viewportPercent"`
 	Target          string  `json:"target,omitempty"`
 	Frame           string  `json:"frame,omitempty"`
+	Seed            string  `json:"seed,omitempty"`
 }
 
 type ActionUploadParams struct {
@@ -609,17 +580,43 @@ type AuthSSOResult struct {
 	ParentTabURL      string `json:"parentTabUrl"`
 }
 
+// MacroEffect is the observable fingerprint used to decide whether an
+// ambiguous action (dispatched but not acknowledged) actually took effect.
+// Zero values are ignored when matching, so a step only asserts what it cares
+// about.
+type MacroEffect struct {
+	URL         string `json:"url,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Checked     *bool  `json:"checked,omitempty"`
+	Disabled    *bool  `json:"disabled,omitempty"`
+	TargetCount *int   `json:"targetCount,omitempty"`
+}
+
+// MacroRetry is the per-step retry policy. Times are milliseconds.
+type MacroRetry struct {
+	Max     int      `json:"max,omitempty"`
+	BaseMs  int      `json:"base_ms,omitempty"`
+	CapMs   int      `json:"cap_ms,omitempty"`
+	RetryOn []string `json:"retry_on,omitempty"`
+}
+
 // MacroStep is one recorded action. Field names follow docs/MACRO_SCHEMA.md.
 type MacroStep struct {
-	StepID      int               `json:"step_id"`
-	Description string            `json:"description,omitempty"`
-	Action      string            `json:"action"`
-	Target      *MacroTarget      `json:"target,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Value       string            `json:"value,omitempty"`
-	Options     *MacroStepOptions `json:"options,omitempty"`
-	OnFailure   string            `json:"on_failure,omitempty"`
-	Condition   string            `json:"condition,omitempty"`
+	StepID         int               `json:"step_id"`
+	Description    string            `json:"description,omitempty"`
+	Action         string            `json:"action"`
+	Target         *MacroTarget      `json:"target,omitempty"`
+	URL            string            `json:"url,omitempty"`
+	Value          string            `json:"value,omitempty"`
+	Options        *MacroStepOptions `json:"options,omitempty"`
+	OnFailure      string            `json:"on_failure,omitempty"`
+	Condition      string            `json:"condition,omitempty"`
+	Precondition   *MacroEffect      `json:"precondition,omitempty"`
+	Postcondition  *MacroEffect      `json:"postcondition,omitempty"`
+	Retry          *MacroRetry       `json:"retry,omitempty"`
+	TimeoutMs      int               `json:"timeout_ms,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key,omitempty"`
+	Compensate     *MacroStep        `json:"compensate,omitempty"`
 }
 
 type MacroStepOptions struct {
@@ -628,6 +625,7 @@ type MacroStepOptions struct {
 	Direction string   `json:"direction,omitempty"`
 	Amount    float64  `json:"amount,omitempty"`
 	Modifiers []string `json:"modifiers,omitempty"`
+	Seed      string   `json:"seed,omitempty"`
 }
 
 type MacroParameter struct {
@@ -684,23 +682,35 @@ type MacroListResult struct {
 }
 
 type MacroRunParams struct {
-	Name string            `json:"name"`
-	Vars map[string]string `json:"vars,omitempty"`
+	Name   string            `json:"name"`
+	Vars   map[string]string `json:"vars,omitempty"`
+	RunID  string            `json:"runId,omitempty"`
+	Resume bool              `json:"resume,omitempty"`
 }
 
 type MacroRunResult struct {
-	Macro      string `json:"macro"`
-	StepsRun   int    `json:"stepsRun"`
-	DurationMs int64  `json:"durationMs"`
-	Completed  bool   `json:"completed"`
+	Macro       string `json:"macro"`
+	RunID       string `json:"runId,omitempty"`
+	StepsRun    int    `json:"stepsRun"`
+	DurationMs  int64  `json:"durationMs"`
+	Completed   bool   `json:"completed"`
+	ResumedFrom int    `json:"resumedFrom,omitempty"`
+	Checkpoint  string `json:"checkpoint,omitempty"`
+	Compensated []int  `json:"compensated,omitempty"`
 }
 
 // MacroStepFailure is attached as RPC error data when replay stops.
 type MacroStepFailure struct {
 	Status          string `json:"status"`
 	Macro           string `json:"macro"`
+	RunID           string `json:"runId,omitempty"`
 	FailedStepID    int    `json:"failed_step_id"`
 	Reason          string `json:"reason"`
+	Classification  string `json:"classification,omitempty"`
+	Attempts        int    `json:"attempts,omitempty"`
+	CircuitOpen     bool   `json:"circuitOpen,omitempty"`
+	DeadLetter      string `json:"deadLetter,omitempty"`
+	Compensated     []int  `json:"compensated,omitempty"`
 	CurrentSnapshot string `json:"current_snapshot"`
 	RemainingSteps  int    `json:"remaining_steps"`
 }

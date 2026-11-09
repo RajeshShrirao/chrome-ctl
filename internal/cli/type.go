@@ -19,6 +19,7 @@ const (
 func newTypeCmd() *cobra.Command {
 	var enter, snap bool
 	var typoRate float64
+	var seed string
 	cmd := &cobra.Command{
 		Use:   `type <id> "<text>"`,
 		Short: "Type text into an indexed element with human cadence",
@@ -47,6 +48,7 @@ func newTypeCmd() *cobra.Command {
 				Enter:    enter,
 				TypoRate: &rate,
 				Snap:     snap,
+				Seed:     seed,
 			}
 			var result protocol.ActionTypeResult
 			if err := callRPCWithTimeout(cmd, protocol.MethodActionType, params, &result, typeTimeout); err != nil {
@@ -59,6 +61,7 @@ func newTypeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&enter, "enter", false, "Press Enter after typing")
 	cmd.Flags().Float64Var(&typoRate, "typo-rate", 0.02, "Fraction of characters typed with a typo (0-1)")
 	cmd.Flags().BoolVar(&snap, "snap", false, "Include a page snapshot after typing")
+	cmd.Flags().StringVar(&seed, "seed", "", "Deterministic seed for humanized typing cadence and flight times")
 	return cmd
 }
 

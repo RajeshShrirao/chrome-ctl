@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rajeshshrirao/chrome-ctl/internal/bulk"
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
 	"github.com/spf13/cobra"
 )
@@ -28,6 +30,20 @@ const (
 	bulkTabOpenTimeout    = 35 * time.Second
 	bulkManifestName      = "manifest.jsonl"
 	bulkTemplateToken     = "{{item}}"
+
+	// Per-host politeness. The AIMD spacing only binds when --wait is shorter
+	// than 1/rate; on failure it halves until the host looks healthy again.
+	bulkRateMin          = 0.1
+	bulkRateMax          = 4.0
+	bulkRateAlpha        = 0.25
+	bulkBreakerThreshold = 4
+	bulkBreakerCooldown  = 30 * time.Second
+
+	// Retries only cover transient classes, with full-jitter exponential backoff.
+	bulkRetryMax        = 3
+	bulkRetryBase       = 500 * time.Millisecond
+	bulkRetryCap        = 8 * time.Second
+	bulkNearDupDistance = 3
 )
 
 type bulkFlags struct {
@@ -52,6 +68,10 @@ type bulkManifestEntry struct {
 	WaitedMs int64  `json:"waitedMs"`
 	OK       bool   `json:"ok"`
 	Error    string `json:"error,omitempty"`
+	// Hash is the exact SHA-256 of the saved markdown; SimHash enables
+	// near-duplicate detection across trivial template changes.
+	Hash    string `json:"hash,omitempty"`
+	SimHash uint64 `json:"simHash,omitempty"`
 }
 
 func newBulkCmd() *cobra.Command {
@@ -70,7 +90,7 @@ func newBulkCmd() *cobra.Command {
 	cmd.Flags().IntVar(&flags.limit, "limit", 0, "Stop after this many items (0 = no limit)")
 	cmd.Flags().IntVar(&flags.minBytes, "min-bytes", bulkDefaultMinBytes, "Stop when a page's markdown is shorter than this")
 	cmd.Flags().BoolVar(&flags.stopOnEmpty, "stop-on-empty", true, "Stop the run when a page is shorter than --min-bytes")
-	cmd.Flags().IntVar(&flags.maxRepeats, "max-repeats", bulkDefaultMaxRepeats, "Stop after this many consecutive identical pages")
+	cmd.Flags().IntVar(&flags.maxRepeats, "max-repeats", bulkDefaultMaxRepeats, "Stop after this many consecutive near-duplicate pages")
 	cmd.Flags().BoolVar(&flags.resume, "resume", false, "Skip URLs already marked ok in the manifest")
 	cmd.Flags().BoolVar(&flags.quiet, "quiet", false, "Suppress per-item progress on stderr")
 	cmd.Flags().BoolVar(&flags.networkWait, "network", true, "Wait for network quiet after each navigation")
@@ -130,6 +150,17 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 	stdout := cmd.OutOrStdout()
 	stderr := cmd.ErrOrStderr()
 
+	scheduler := bulk.NewScheduler(bulk.SchedulerConfig{
+		MinRate:          bulkRateMin,
+		MaxRate:          bulkRateMax,
+		StartRate:        bulkRateMax,
+		Alpha:            bulkRateAlpha,
+		FailureThreshold: bulkBreakerThreshold,
+		Cooldown:         bulkBreakerCooldown,
+	})
+	retryPolicy := bulk.RetryPolicy{Max: bulkRetryMax, Base: bulkRetryBase, Cap: bulkRetryCap}
+	nearDuplicates := bulk.NewNearDuplicates(bulkNearDupDistance)
+
 	scraped, failed, skipped := 0, 0, 0
 	stopReason := ""
 	lastHash := ""
@@ -150,9 +181,43 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 
 		started := time.Now()
 		entry := bulkManifestEntry{Index: index, URL: target}
-		entry.File, entry.Title, entry.Bytes, entry.Error = scrapeOne(cmd, &window, target, index, flags, stderr)
+		host := bulkHost(target)
+		var itemErr error
+
+		for attempt := 0; attempt <= bulkRetryMax; attempt += 1 {
+			admitted, waitErr := admitBulk(cmd, scheduler, host)
+			if waitErr != nil {
+				return waitErr
+			}
+			if !admitted {
+				itemErr = fmt.Errorf("circuit open for %s after %d consecutive failures", host, bulkBreakerThreshold)
+				break
+			}
+
+			entry.File, entry.Title, entry.Bytes, itemErr = scrapeOne(cmd, &window, target, index, flags, stderr)
+			scheduler.Done(host, itemErr == nil)
+			if itemErr == nil {
+				break
+			}
+			if attempt == bulkRetryMax || !bulkTransient(itemErr) {
+				break
+			}
+
+			delay := retryPolicy.Delay(attempt, rand.Float64(), bulkRetryAfter(itemErr))
+			if !flags.quiet {
+				fmt.Fprintf(stderr, "retry %d/%d %s in %s: %s\n",
+					attempt+1, bulkRetryMax, target, formatWaitDuration(int(delay.Milliseconds())), itemErr)
+			}
+			if sleepWithContext(cmd.Context(), delay) != nil {
+				return cmd.Context().Err()
+			}
+		}
+
 		entry.WaitedMs = time.Since(started).Milliseconds()
-		entry.OK = entry.Error == ""
+		entry.OK = itemErr == nil
+		if itemErr != nil {
+			entry.Error = itemErr.Error()
+		}
 
 		if entry.OK {
 			if entry.Bytes < flags.minBytes {
@@ -161,25 +226,28 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 				}
 			}
 
-			hash := ""
-			if entry.File != "" {
-				if data, readErr := os.ReadFile(filepath.Join(flags.out, entry.File)); readErr == nil {
-					sum := sha256.Sum256(data)
-					hash = hex.EncodeToString(sum[:])
-				}
+			entry.Hash, entry.SimHash = bulkPageHashes(flags.out, entry.File)
+
+			// Near-duplicates are reported through an LSH index, so repeated
+			// templates with slightly different text still stop the run. The
+			// exact SHA stays as the fast path.
+			near := false
+			if entry.SimHash != 0 {
+				near = nearDuplicates.Seen(entry.SimHash)
+				nearDuplicates.Add(entry.SimHash)
 			}
-			if hash != "" && hash == lastHash {
-				repeats++
+			if near || (entry.Hash != "" && entry.Hash == lastHash) {
+				repeats += 1
 				if repeats >= flags.maxRepeats {
-					stopReason = fmt.Sprintf("%d identical pages ending at %d", repeats, index)
+					stopReason = fmt.Sprintf("%d near-duplicate pages ending at %d", repeats, index)
 				}
 			} else {
 				repeats = 0
-				lastHash = hash
+				lastHash = entry.Hash
 			}
-			scraped++
+			scraped += 1
 		} else {
-			failed++
+			failed += 1
 			fmt.Fprintf(stdout, "FAIL %03d %s: %s\n", index, target, entry.Error)
 		}
 
@@ -226,18 +294,18 @@ func scrapeOne(
 	index int,
 	flags bulkFlags,
 	stderr io.Writer,
-) (string, string, int, string) {
+) (string, string, int, error) {
 	openParams := protocol.TabOpenParams{URL: target, WindowID: &window.WindowID}
 	var opened protocol.TabOpenResult
 	if err := callRPCWithTimeout(cmd, protocol.MethodTabOpen, openParams, &opened, bulkTabOpenTimeout); err != nil {
-		return "", "", 0, err.Error()
+		return "", "", 0, err
 	}
 
 	waitBulk(cmd, flags)
 
 	var read protocol.PageReadResult
 	if err := callRPC(cmd, protocol.MethodPageRead, protocol.PageReadParams{}, &read); err != nil {
-		return "", "", 0, err.Error()
+		return "", "", 0, err
 	}
 
 	title := opened.Title
@@ -249,13 +317,136 @@ func scrapeOne(
 	}
 
 	filename := bulkFilename(index, target)
-	if err := os.WriteFile(filepath.Join(flags.out, filename), []byte(read.Markdown), 0o644); err != nil {
-		return "", title, 0, fmt.Sprintf("write %s: %v", filename, err)
+	if err := writeFileAtomic(filepath.Join(flags.out, filename), []byte(read.Markdown)); err != nil {
+		return "", title, 0, fmt.Errorf("write %s: %w", filename, err)
 	}
 	if title == "" && read.Markdown == "" {
 		fmt.Fprintln(stderr, "warning: empty title and markdown")
 	}
-	return filename, title, len(read.Markdown), ""
+	return filename, title, len(read.Markdown), nil
+}
+
+// writeFileAtomic writes to a sibling temp file, fsyncs it, then renames, so an
+// interrupted crawl never leaves a half-written page behind.
+func writeFileAtomic(path string, data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".bulk-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tempPath, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+// bulkHost keys per-host pacing and circuit breaking. Unparseable targets share
+// one bucket rather than escaping rate control.
+func bulkHost(target string) string {
+	parsed, err := url.Parse(strings.TrimSpace(target))
+	if err != nil || parsed.Host == "" {
+		return "local"
+	}
+	return parsed.Host
+}
+
+// admitBulk waits for the scheduler to admit one request. Behind an open
+// breaker it waits out one cooldown and then fails if no probe is granted.
+func admitBulk(cmd *cobra.Command, scheduler *bulk.Scheduler, host string) (bool, error) {
+	wait, ok := scheduler.Admit(host)
+	if !ok {
+		if wait <= 0 {
+			return false, nil
+		}
+		if err := sleepWithContext(cmd.Context(), wait); err != nil {
+			return false, err
+		}
+		wait, ok = scheduler.Admit(host)
+		if !ok {
+			return false, nil
+		}
+	}
+	if err := sleepWithContext(cmd.Context(), wait); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// bulkTransient classifies an item failure. RPC errors carry a typed code;
+// transport failures (daemon restarting, reset connection) carry none and are
+// worth one more attempt. A cancelled command is never retried.
+func bulkTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	code, ok := rpcErrorCode(err)
+	if !ok {
+		return true
+	}
+	return bulk.IsTransientCode(code)
+}
+
+// bulkRetryAfter reads an optional server retry hint from RPC error data. The
+// HTTP transport cannot see a 429 header today; this keeps the contract in the
+// one place the extension could surface it.
+func bulkRetryAfter(err error) time.Duration {
+	var mapped *rpcMappedError
+	if !errors.As(err, &mapped) {
+		return 0
+	}
+	data, ok := mapped.data.(map[string]any)
+	if !ok || len(data) == 0 {
+		return 0
+	}
+	if raw, ok := data["retryAfterMs"]; ok {
+		if value, ok := raw.(float64); ok && value > 0 {
+			return time.Duration(value) * time.Millisecond
+		}
+	}
+	raw, ok := data["retryAfter"]
+	if !ok {
+		return 0
+	}
+	switch value := raw.(type) {
+	case float64:
+		if value > 0 {
+			return time.Duration(value * float64(time.Second))
+		}
+	case string:
+		if parsed, parseErr := time.ParseDuration(value); parseErr == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// bulkPageHashes returns the exact and near-duplicate hashes of a saved page.
+func bulkPageHashes(dir, name string) (string, uint64) {
+	if name == "" {
+		return "", 0
+	}
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return "", 0
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), bulk.SimHash64(string(data))
 }
 
 // waitBulk waits for network quiet, falling back to DOM idle when the debugger
@@ -398,7 +589,9 @@ func appendBulkManifest(manifest *os.File, entry bulkManifestEntry) error {
 	if _, err := manifest.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
-	return nil
+	// Resume depends on a durable record; fsync per item is cheap next to a
+	// page fetch and avoids losing the whole tail on a crash.
+	return manifest.Sync()
 }
 
 func sleepBulk(cmd *cobra.Command, spec waitSpec) bool {

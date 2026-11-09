@@ -32,6 +32,8 @@ let token: string | undefined;
 let tokenConfigured = false;
 let state: ConnState = "unconfigured";
 let daemonVersion: string | undefined;
+let daemonProtocolVersion: string | undefined;
+let daemonCapabilities: string[] = [];
 let lastError: string | undefined;
 
 let socket: WebSocket | null = null;
@@ -89,6 +91,8 @@ function applyToken(next: string | undefined): void {
   token = next;
   tokenConfigured = next !== undefined;
   daemonVersion = undefined;
+  daemonProtocolVersion = undefined;
+  daemonCapabilities = [];
 
   if (next === undefined) {
     clearReconnectTimer();
@@ -333,6 +337,8 @@ function handleClose(ws: WebSocket): void {
   stopWatchdog();
   failPending("daemon connection closed");
   daemonVersion = undefined;
+  daemonProtocolVersion = undefined;
+  daemonCapabilities = [];
 
   if (token === undefined) {
     state = "unconfigured";
@@ -374,9 +380,19 @@ function handleDaemonMessage(ws: WebSocket, raw: string): void {
   }
 
   if (message.method === Methods.systemReady) {
-    const params = message.params as { version?: unknown } | undefined;
+    const params = message.params as
+      | { version?: unknown; protocolVersion?: unknown; capabilities?: unknown }
+      | undefined;
     if (typeof params?.version === "string") {
       daemonVersion = params.version;
+    }
+    if (typeof params?.protocolVersion === "string") {
+      daemonProtocolVersion = params.protocolVersion;
+    }
+    if (Array.isArray(params?.capabilities)) {
+      daemonCapabilities = params.capabilities.filter(
+        (value): value is string => typeof value === "string",
+      );
     }
     return;
   }
@@ -451,6 +467,8 @@ function connect(): void {
   }
 
   daemonVersion = undefined;
+  daemonProtocolVersion = undefined;
+  daemonCapabilities = [];
   lastError = undefined;
   state = "connecting";
 
@@ -513,6 +531,12 @@ function statusReply(): WsStatusReply {
   }
   if (daemonVersion !== undefined) {
     reply.daemonVersion = daemonVersion;
+  }
+  if (daemonProtocolVersion !== undefined) {
+    reply.daemonProtocolVersion = daemonProtocolVersion;
+  }
+  if (daemonCapabilities.length > 0) {
+    reply.daemonCapabilities = [...daemonCapabilities];
   }
   if (lastError !== undefined) {
     reply.lastError = lastError;

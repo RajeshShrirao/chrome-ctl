@@ -163,6 +163,56 @@ function computedStyle(doc: Document, el: Element): CSSStyleDeclaration | null {
   }
 }
 
+/**
+ * Layout and style are read at most once per element per snapshot. The cache is
+ * scoped to one `snapshot()` call so callers never see stale geometry.
+ */
+interface Measurement {
+  local: DOMRect;
+  style: CSSStyleDeclaration | null;
+}
+
+type MeasureCache = Map<Element, Measurement>;
+
+function measureElement(el: Element, cache: MeasureCache): Measurement {
+  const cached = cache.get(el);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const measurement: Measurement = {
+    local: el.getBoundingClientRect(),
+    style: computedStyle(el.ownerDocument, el),
+  };
+  cache.set(el, measurement);
+  return measurement;
+}
+
+/** Composed viewport rect using cached local rects for the element and its frames. */
+function composedRect(el: Element, cache: MeasureCache): ViewportRect {
+  const local = measureElement(el, cache).local;
+  let rect: ViewportRect = {
+    left: local.left,
+    top: local.top,
+    width: local.width,
+    height: local.height,
+  };
+
+  const seen = new Set<Element>();
+  let frame = frameElementOf(el.ownerDocument);
+  while (frame !== null && !seen.has(frame)) {
+    seen.add(frame);
+    const frameRect = measureElement(frame, cache).local;
+    rect = addFrameOffset(
+      rect,
+      frameRect,
+      frame.clientLeft ?? 0,
+      frame.clientTop ?? 0,
+    );
+    frame = frameElementOf(frame.ownerDocument);
+  }
+  return rect;
+}
+
 export function collapseWhitespace(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
@@ -379,8 +429,25 @@ export function formatLine(element: SnapElement, alwaysParens: boolean): string 
   return `[${element.id}]${frameTag} <${tagToken}> "${escapedLabel}"${parens} @${element.x},${element.y}`;
 }
 
-function describeElement(el: Element, id: number, geometry: Element = el, frame?: string): SnapElement {
-  const rect = viewportRect(geometry);
+/** Render snapshot lines after ids have been stabilised or remapped. */
+export function formatSnapLines(
+  elements: SnapElement[],
+  byId: Map<number, Element>,
+): string[] {
+  return elements.map((element) => {
+    const el = byId.get(element.id);
+    return formatLine(element, el !== undefined && isEmittedFormField(el));
+  });
+}
+
+function describeElement(
+  el: Element,
+  id: number,
+  geometry: Element,
+  frame: string | undefined,
+  cache: MeasureCache,
+): SnapElement {
+  const rect = composedRect(geometry, cache);
   const ownerDoc = geometry.ownerDocument ?? el.ownerDocument;
   const result: SnapElement = {
     id,
@@ -400,8 +467,6 @@ function describeElement(el: Element, id: number, geometry: Element = el, frame?
   return result;
 }
 
-type QueryRoot = Document | ShadowRoot;
-
 function shadowRootOf(el: Element): ShadowRoot | null {
   try {
     return el.shadowRoot ?? null;
@@ -412,8 +477,6 @@ function shadowRootOf(el: Element): ShadowRoot | null {
 
 export interface FrameCollectorContext {
   topDoc: Document;
-  frameMap: Map<Document, string>;
-  frameElements: Map<Element, string>;
   totalFrames: number;
   sameOriginTraversed: number;
   crossOrigin: number;
@@ -463,8 +526,8 @@ function frameDocumentOf(el: Element): { doc: Document | null; status: "same-ori
 }
 
 /** Hidden or zero-size iframes are skipped entirely, including their contents. */
-function isFrameVisible(frame: Element): boolean {
-  const style = computedStyle(frame.ownerDocument, frame);
+function isFrameVisible(frame: Element, cache: MeasureCache): boolean {
+  const style = measureElement(frame, cache).style;
   if (
     style &&
     (style.display === "none" ||
@@ -473,92 +536,23 @@ function isFrameVisible(frame: Element): boolean {
   ) {
     return false;
   }
-  const rect = frame.getBoundingClientRect();
+  const rect = measureElement(frame, cache).local;
   return rect.width >= MIN_RECT_PX && rect.height >= MIN_RECT_PX;
 }
 
-/**
- * Candidate elements in composed document order: light DOM, then each open
- * shadow root at its host's position, then same-origin iframe documents at
- * their frame's position. `seen` guards against duplicate emission.
- */
-function collectCandidates(
-  root: QueryRoot,
-  out: Element[],
-  seen: Set<Element>,
-  ctx: FrameCollectorContext,
-  depth = 0,
-  deep = false,
-  forceFrames = false,
-): void {
-  if (depth > 64) {
-    return;
-  }
-  for (const el of Array.from(root.querySelectorAll("*"))) {
-    if (seen.has(el)) {
-      continue;
-    }
-    if (matchesCandidate(el, deep)) {
-      seen.add(el);
-      out.push(el);
-      if (el.ownerDocument !== ctx.topDoc) {
-        const frameTag = ctx.frameMap.get(el.ownerDocument);
-        if (frameTag) {
-          ctx.frameElements.set(el, frameTag);
-        }
-      }
-    }
-    const shadow = shadowRootOf(el);
-    if (shadow) {
-      collectCandidates(shadow, out, seen, ctx, depth + 1, deep, forceFrames);
-    }
-    const tag = el.tagName.toLowerCase();
-    if (tag === "iframe" || tag === "frame") {
-      ctx.totalFrames++;
-      const { doc: frameDoc, status } = frameDocumentOf(el);
-      if (status === "cross-origin") {
-        ctx.crossOrigin++;
-        ctx.skippedReasons.push("cross-origin");
-      } else if (status === "not-loaded" || !frameDoc) {
-        ctx.skippedReasons.push("not loaded");
-      } else {
-        const visible = isFrameVisible(el);
-        if (!visible && !forceFrames) {
-          const style = computedStyle(el.ownerDocument, el);
-          if (
-            style &&
-            (style.display === "none" ||
-              style.visibility === "hidden" ||
-              style.visibility === "collapse")
-          ) {
-            ctx.skippedReasons.push("hidden");
-          } else {
-            ctx.skippedReasons.push("zero-size");
-          }
-        } else {
-          ctx.sameOriginTraversed++;
-          const frameTag = `f${ctx.sameOriginTraversed}`;
-          ctx.frameMap.set(frameDoc, frameTag);
-          collectCandidates(frameDoc, out, seen, ctx, depth + 1, deep, forceFrames);
-        }
-      }
-    }
-  }
-}
-
 /** Opt-in heuristic for div-based controls: deepest element with cursor:pointer. */
-function isPointerCandidate(el: Element): boolean {
+function isPointerCandidate(el: Element, cache: MeasureCache): boolean {
   const tag = el.tagName.toLowerCase();
   if (NON_POINTER_CONTAINERS.has(tag)) {
     return false;
   }
-  const style = computedStyle(el.ownerDocument, el);
+  const style = measureElement(el, cache).style;
   if (style === null || style.cursor !== "pointer") {
     return false;
   }
   const parent = el.parentElement;
   if (parent !== null) {
-    const parentStyle = computedStyle(parent.ownerDocument, parent);
+    const parentStyle = measureElement(parent, cache).style;
     if (parentStyle !== null && parentStyle.cursor === "pointer") {
       return false;
     }
@@ -576,7 +570,7 @@ function isPointerCandidate(el: Element): boolean {
   return true;
 }
 
-function matchesCandidate(el: Element, deep: boolean): boolean {
+function matchesCandidate(el: Element, deep: boolean, cache: MeasureCache): boolean {
   if (!isCandidate(el)) {
     return false;
   }
@@ -589,19 +583,7 @@ function matchesCandidate(el: Element, deep: boolean): boolean {
   if (el.matches(DEEP_CANDIDATE_SELECTOR)) {
     return true;
   }
-  return isPointerCandidate(el);
-}
-
-/** Composed parent that stops at iframe document boundaries (for flattening). */
-function composedParentElement(el: Element): Element | null {
-  if (el.parentElement !== null) {
-    return el.parentElement;
-  }
-  const root = el.getRootNode();
-  if (root.nodeType === 11) {
-    return (root as ShadowRoot).host ?? null;
-  }
-  return null;
+  return isPointerCandidate(el, cache);
 }
 
 /** Composed parent crossing shadow roots and same-origin iframe boundaries. */
@@ -672,8 +654,8 @@ function ancestorFrames(el: Element): Element[] {
 }
 
 /** An iframe's content viewport in top-frame coordinates (borders excluded). */
-function frameContentRect(frame: Element): RectBox {
-  const rect = viewportRect(frame);
+function frameContentRect(frame: Element, cache: MeasureCache): RectBox {
+  const rect = composedRect(frame, cache);
   const element = frame as HTMLElement;
   const borderLeft = frame.clientLeft ?? 0;
   const borderTop = frame.clientTop ?? 0;
@@ -694,10 +676,14 @@ function frameContentRect(frame: Element): RectBox {
 }
 
 /** Content scrolled outside any ancestor iframe's content box is clipped. */
-export function isInsideFrameContent(el: Element, rect: ViewportRect): boolean {
+export function isInsideFrameContent(
+  el: Element,
+  rect: ViewportRect,
+  cache: MeasureCache = new Map(),
+): boolean {
   const box = toRectBox(rect);
   for (const frame of ancestorFrames(el)) {
-    if (!overlapsAtLeast(box, frameContentRect(frame), MIN_RECT_PX)) {
+    if (!overlapsAtLeast(box, frameContentRect(frame, cache), MIN_RECT_PX)) {
       return false;
     }
   }
@@ -736,11 +722,12 @@ function isCulledByModal(
   el: Element,
   modal: Element,
   hitTest: (x: number, y: number) => Element | null,
+  cache: MeasureCache,
 ): boolean {
   if (containsComposed(modal, el) || containsComposed(el, modal)) {
     return false;
   }
-  const rect = viewportRect(el);
+  const rect = composedRect(el, cache);
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
   let hit: Element | null = null;
@@ -762,9 +749,10 @@ function isCulled(
   all: boolean,
   modal: Element | null,
   hitTest: ((x: number, y: number) => Element | null) | null,
+  cache: MeasureCache,
 ): boolean {
-  const ownerDoc = el.ownerDocument ?? doc;
-  const style = computedStyle(ownerDoc, el);
+  const measured = measureElement(el, cache);
+  const style = measured.style;
   if (style) {
     if (style.display === "none") {
       return true;
@@ -777,12 +765,12 @@ function isCulled(
     }
   }
 
-  const local = el.getBoundingClientRect();
+  const local = measured.local;
   if (local.width < MIN_RECT_PX || local.height < MIN_RECT_PX) {
     return true;
   }
 
-  const rect = viewportRect(el);
+  const rect = composedRect(el, cache);
   if (!all) {
     const viewportWidth = win.innerWidth ?? doc.documentElement?.clientWidth ?? 0;
     const viewportHeight = win.innerHeight;
@@ -792,13 +780,13 @@ function isCulled(
       rect.left + rect.width >= -VIEWPORT_MARGIN_PX &&
       rect.left <= viewportWidth + VIEWPORT_MARGIN_PX
     );
-    if (outsideViewport || !isInsideFrameContent(el, rect)) {
+    if (outsideViewport || !isInsideFrameContent(el, rect, cache)) {
       return true;
     }
   }
 
   if (modal !== null && hitTest !== null) {
-    return isCulledByModal(doc, el, modal, hitTest);
+    return isCulledByModal(doc, el, modal, hitTest, cache);
   }
   return false;
 }
@@ -814,8 +802,9 @@ function isFileInput(el: Element): boolean {
   return el.tagName.toLowerCase() === "input" && effectiveInputType(el) === "file";
 }
 
-function isRendered(el: Element): boolean {
-  const style = computedStyle(el.ownerDocument, el);
+function isRendered(el: Element, cache: MeasureCache): boolean {
+  const measured = measureElement(el, cache);
+  const style = measured.style;
   if (
     style &&
     (style.display === "none" ||
@@ -824,7 +813,7 @@ function isRendered(el: Element): boolean {
   ) {
     return false;
   }
-  const rect = el.getBoundingClientRect();
+  const rect = measured.local;
   return rect.width >= MIN_RECT_PX && rect.height >= MIN_RECT_PX;
 }
 
@@ -832,8 +821,8 @@ function isRendered(el: Element): boolean {
  * A visually hidden file input is unreachable by clicking, so emit it at its
  * associated visible label's rect instead. Clicking that label opens the picker.
  */
-function fileInputGeometry(el: Element): Element {
-  if (!isFileInput(el) || isRendered(el)) {
+function fileInputGeometry(el: Element, cache: MeasureCache): Element {
+  if (!isFileInput(el) || isRendered(el, cache)) {
     return el;
   }
   const id = el.getAttribute("id");
@@ -841,12 +830,12 @@ function fileInputGeometry(el: Element): Element {
     const labelled = Array.from(el.ownerDocument.querySelectorAll("label[for]")).find(
       (label) => label.getAttribute("for") === id,
     );
-    if (labelled !== undefined && isRendered(labelled)) {
+    if (labelled !== undefined && isRendered(labelled, cache)) {
       return labelled;
     }
   }
   const wrapping = el.closest("label");
-  if (wrapping !== null && isRendered(wrapping)) {
+  if (wrapping !== null && isRendered(wrapping, cache)) {
     return wrapping;
   }
   return el;
@@ -898,15 +887,189 @@ function suppressesDescendants(el: Element): boolean {
   return role === null || !CHILD_ADDRESSABLE_ROLES.has(role);
 }
 
-function hasEmittedAncestor(el: Element, emitted: Set<Element>): boolean {
-  let parent = composedParentElement(el);
-  for (let depth = 0; parent !== null && depth < 512; depth += 1) {
-    if (emitted.has(parent) && suppressesDescendants(parent)) {
-      return true;
-    }
-    parent = composedParentElement(parent);
+type WalkRoot = Document | ShadowRoot | Element;
+
+interface SnapshotBuild {
+  doc: Document;
+  win: WindowLike;
+  all: boolean;
+  formsOnly: boolean;
+  deep: boolean;
+  forceFrames: boolean;
+  maxElements: number;
+  modal: Element | null;
+  hitTest: ((x: number, y: number) => Element | null) | null;
+  cache: MeasureCache;
+  elements: SnapElement[];
+  byId: Map<number, Element>;
+  seen: Set<Element>;
+  nextId: number;
+  omitted: number;
+  frames: FrameCollectorContext;
+}
+
+/** Traverse a same-origin frame at the frame element's position in the walk. */
+function visitFrame(frame: Element, depth: number, ctx: SnapshotBuild): void {
+  ctx.frames.totalFrames += 1;
+  const { doc: frameDoc, status } = frameDocumentOf(frame);
+  if (status === "cross-origin") {
+    ctx.frames.crossOrigin += 1;
+    ctx.frames.skippedReasons.push("cross-origin");
+    return;
   }
-  return false;
+  if (status === "not-loaded" || frameDoc === null) {
+    ctx.frames.skippedReasons.push("not loaded");
+    return;
+  }
+  if (!isFrameVisible(frame, ctx.cache) && !ctx.forceFrames) {
+    const style = measureElement(frame, ctx.cache).style;
+    if (
+      style &&
+      (style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse")
+    ) {
+      ctx.frames.skippedReasons.push("hidden");
+    } else {
+      ctx.frames.skippedReasons.push("zero-size");
+    }
+    return;
+  }
+
+  ctx.frames.sameOriginTraversed += 1;
+  const frameTag = `f${ctx.frames.sameOriginTraversed}`;
+  // A frame document starts a new tree: emitted ancestors outside the frame do
+  // not suppress its contents (matching the old composed-parent walk).
+  walkComposed(frameDoc, false, frameTag, depth + 1, ctx);
+}
+
+/**
+ * One composed-tree pass: light DOM in document order, each open shadow root at
+ * its host's position, then same-origin frame documents at the frame's
+ * position. `blocked` replaces the old per-element ancestor walk: an emitted
+ * element that suppresses descendants blocks the rest of its subtree.
+ *
+ * The walk is iterative so light-DOM nesting is unbounded (the old flat
+ * `querySelectorAll` had no recursion cost per level). `depth` counts composed
+ * boundaries only — shadow roots and frames — and stays capped at 64 like the
+ * original guard.
+ */
+type WorkItem =
+  | {
+      kind: "nodes";
+      nodes: Element[];
+      index: number;
+      blocked: boolean;
+      frameTag: string | undefined;
+      depth: number;
+    }
+  | { kind: "frame"; el: Element; depth: number };
+
+const MAX_COMPOSED_DEPTH = 64;
+
+function walkComposed(
+  root: WalkRoot,
+  blocked: boolean,
+  frameTag: string | undefined,
+  depth: number,
+  ctx: SnapshotBuild,
+): void {
+  if (depth > MAX_COMPOSED_DEPTH) {
+    return;
+  }
+
+  const stack: WorkItem[] = [
+    {
+      kind: "nodes",
+      nodes: Array.from(root.children),
+      index: 0,
+      blocked,
+      frameTag,
+      depth,
+    },
+  ];
+
+  while (stack.length > 0) {
+    const item = stack[stack.length - 1];
+
+    if (item.kind === "frame") {
+      stack.pop();
+      visitFrame(item.el, item.depth, ctx);
+      continue;
+    }
+
+    if (item.index >= item.nodes.length) {
+      stack.pop();
+      continue;
+    }
+    const el = item.nodes[item.index];
+    item.index += 1;
+
+    if (ctx.seen.has(el)) {
+      continue;
+    }
+    ctx.seen.add(el);
+
+    let childBlocked = item.blocked;
+    if (!item.blocked && matchesCandidate(el, ctx.deep, ctx.cache)) {
+      const eligible = !ctx.formsOnly || isFormField(el);
+      if (eligible) {
+        const geometry = fileInputGeometry(el, ctx.cache);
+        if (
+          !isCulled(
+            ctx.doc,
+            geometry,
+            ctx.win,
+            ctx.all,
+            ctx.modal,
+            ctx.hitTest,
+            ctx.cache,
+          )
+        ) {
+          if (ctx.elements.length >= ctx.maxElements) {
+            ctx.omitted += 1;
+          } else {
+            const id = ctx.nextId;
+            ctx.nextId += 1;
+            const described = describeElement(el, id, geometry, item.frameTag, ctx.cache);
+            ctx.elements.push(described);
+            ctx.byId.set(id, el);
+            if (suppressesDescendants(el)) {
+              childBlocked = true;
+            }
+          }
+        }
+      }
+    }
+
+    const tag = el.tagName.toLowerCase();
+    const shadow = shadowRootOf(el);
+    const boundaryDepth = item.depth + 1;
+
+    // Push in reverse execution order: light children run last, the frame is
+    // traversed before them, and the shadow root runs immediately after `el`.
+    stack.push({
+      kind: "nodes",
+      nodes: Array.from(el.children),
+      index: 0,
+      blocked: childBlocked,
+      frameTag: item.frameTag,
+      depth: item.depth,
+    });
+    if (tag === "iframe" || tag === "frame") {
+      stack.push({ kind: "frame", el, depth: item.depth });
+    }
+    if (shadow !== null && boundaryDepth <= MAX_COMPOSED_DEPTH) {
+      stack.push({
+        kind: "nodes",
+        nodes: Array.from(shadow.children),
+        index: 0,
+        blocked: childBlocked,
+        frameTag: item.frameTag,
+        depth: boundaryDepth,
+      });
+    }
+  }
 }
 
 /**
@@ -915,36 +1078,14 @@ function hasEmittedAncestor(el: Element, emitted: Set<Element>): boolean {
  */
 export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowLike): Snapshot {
   const windowLike = win ?? resolveWindow(doc);
-  const all = options.all === true;
-  const formsOnly = options.formsOnly === true;
   const maxElements =
     typeof options.maxElements === "number" && Number.isFinite(options.maxElements) && options.maxElements > 0
       ? Math.floor(options.maxElements)
       : MAX_SNAP_ELEMENTS;
-  let nextId =
+  const nextId =
     typeof options.startId === "number" && Number.isFinite(options.startId)
       ? Math.max(1, Math.floor(options.startId))
       : 1;
-
-  const ctx: FrameCollectorContext = {
-    topDoc: doc,
-    frameMap: new Map(),
-    frameElements: new Map(),
-    totalFrames: 0,
-    sameOriginTraversed: 0,
-    crossOrigin: 0,
-    skippedReasons: [],
-  };
-  const candidates: Element[] = [];
-  collectCandidates(
-    doc,
-    candidates,
-    new Set<Element>(),
-    ctx,
-    0,
-    options.deep === true,
-    options.frames === true,
-  );
 
   const modal = findVisibleModal(doc);
   const hitTest =
@@ -953,51 +1094,42 @@ export function snapshot(doc: Document, options: SnapOptions = {}, win?: WindowL
       ? (x: number, y: number) => doc.elementFromPoint(x, y)
       : null);
 
-  const elements: SnapElement[] = [];
-  const lines: string[] = [];
-  const byId = new Map<number, Element>();
-  const emitted = new Set<Element>();
-  let omitted = 0;
+  const ctx: SnapshotBuild = {
+    doc,
+    win: windowLike,
+    all: options.all === true,
+    formsOnly: options.formsOnly === true,
+    deep: options.deep === true,
+    forceFrames: options.frames === true,
+    maxElements,
+    modal,
+    hitTest,
+    cache: new Map(),
+    elements: [],
+    byId: new Map(),
+    seen: new Set(),
+    nextId,
+    omitted: 0,
+    frames: {
+      topDoc: doc,
+      totalFrames: 0,
+      sameOriginTraversed: 0,
+      crossOrigin: 0,
+      skippedReasons: [],
+    },
+  };
 
-  for (const el of candidates) {
-    if (!isCandidate(el)) {
-      continue;
-    }
-    if (formsOnly && !isFormField(el)) {
-      continue;
-    }
-    // Hierarchy flattening: index the outermost candidate only.
-    if (hasEmittedAncestor(el, emitted)) {
-      continue;
-    }
-    const geometry = fileInputGeometry(el);
-    if (isCulled(doc, geometry, windowLike, all, modal, hitTest)) {
-      continue;
-    }
-    if (elements.length >= maxElements) {
-      omitted += 1;
-      continue;
-    }
+  walkComposed(doc, false, undefined, 0, ctx);
 
-    const id = nextId;
-    nextId += 1;
-    const frameTag = ctx.frameElements.get(el);
-    const described = describeElement(el, id, geometry, frameTag);
-    elements.push(described);
-    emitted.add(el);
-    byId.set(id, el);
-    lines.push(formatLine(described, isEmittedFormField(el)));
-  }
-
-  const framesSummary = formatFramesSummary(ctx);
+  const framesSummary = formatFramesSummary(ctx.frames);
 
   return {
     viewport: computeViewport(doc, windowLike),
-    elements,
-    lines,
-    byId,
-    nextId,
-    omitted,
+    elements: ctx.elements,
+    lines: formatSnapLines(ctx.elements, ctx.byId),
+    byId: ctx.byId,
+    nextId: ctx.nextId,
+    omitted: ctx.omitted,
     ...(framesSummary ? { framesSummary } : {}),
   };
 }

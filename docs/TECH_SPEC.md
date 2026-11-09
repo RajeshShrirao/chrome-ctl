@@ -194,7 +194,7 @@ To achieve `<450 tokens` per snapshot:
    * If a `<button>` contains a nested `<span>`, index the `<button>`, ignore the inner text span.
 4. Assign **globally unique** integer IDs: the snapshot starts at the current `nextId` and advances it, so IDs are never reused within a document. (The earlier `1..n`-per-snap scheme aliased old IDs onto new elements — see `MV3_LIFECYCLE_SPEC.md` §4.1.)
 5. Merge element references into `window.__chromeCtlIndex = new Map<number, Element>()`, pruning `!isConnected` entries first.
-6. Emit `docId`, `snapshotId`, and `omitted` alongside the text. The service worker prefixes the formatted block with `SNAP <snapshotId> | `, rejects actions carrying a stale `expectedDocId`, and appends an `OMITTED: n candidates` footer when `--max-elements` culls anything.
+6. Emit `docId`, `snapshotId`, and `omitted` alongside the text, plus the per-element `change` marker and the `removed` id list. The service worker prefixes the formatted block with `SNAP <snapshotId> | `, rejects actions carrying a stale `expectedDocId`, and appends an `OMITTED: n candidates` footer when `--max-elements` culls anything.
 7. Format output into single-line tokens:
    `[ID] <TAG:type> "Label/Text" (value/state) @x,y`
 

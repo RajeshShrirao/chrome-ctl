@@ -62,7 +62,7 @@ async function snap(extra: Record<string, unknown> = {}): Promise<any> {
   return response.snap;
 }
 
-test("snapshot ids are unique per document and stale identity is rejected", async () => {
+test("snapshot ids stay stable across polls and stale identity is rejected", async () => {
   const first = await snap();
   assert.equal(typeof first.docId, "string");
   assert.notEqual(first.docId, "");
@@ -71,26 +71,33 @@ test("snapshot ids are unique per document and stale identity is rejected", asyn
     first.elements.map((el: { id: number }) => el.id),
     [1, 2],
   );
+  assert.deepEqual(
+    first.elements.map((el: { change?: string }) => el.change),
+    ["added", "added"],
+  );
+  assert.deepEqual(first.removed, []);
 
   const second = await snap();
   assert.equal(second.docId, first.docId);
   assert.equal(second.snapshotId, 2);
+  // Same DOM nodes keep their ids and report no change.
   assert.deepEqual(
     second.elements.map((el: { id: number }) => el.id),
-    [3, 4],
+    [1, 2],
   );
+  assert.deepEqual(
+    second.elements.map((el: { change?: string }) => el.change),
+    ["same", "same"],
+  );
+  assert.deepEqual(second.removed, []);
 
-  // Old ids still resolve to the element they were minted for.
-  const oldTarget = await request({ type: "target", id: 1 });
-  assert.equal(oldTarget.ok, true, oldTarget.error);
-  assert.equal(oldTarget.target.label, "Alpha");
-  assert.equal(oldTarget.target.snapshotId, 2);
+  const target = await request({ type: "target", id: 1 });
+  assert.equal(target.ok, true, target.error);
+  assert.equal(target.target.label, "Alpha");
+  assert.equal(target.target.snapshotId, 2);
 
-  const newTarget = await request({ type: "target", id: 3 });
-  assert.equal(newTarget.ok, true, newTarget.error);
-  assert.equal(newTarget.target.label, "Alpha");
-
-  // Re-rendering replaces the node: the old id must not alias the new one.
+  // Re-rendering replaces the node. A unique fingerprint keeps the id, which
+  // is what makes macro replay and diffing survive framework re-renders.
   const oldButton = domWindow.document.getElementById("a")!;
   const replacement = domWindow.document.createElement("button");
   replacement.id = "a";
@@ -111,31 +118,49 @@ test("snapshot ids are unique per document and stale identity is rejected", asyn
   });
   oldButton.replaceWith(replacement);
 
-  const detached = await request({ type: "target", id: 1 });
-  assert.equal(detached.ok, false);
-  assert.match(detached.error, /element \[1\] not found/);
-
   const third = await snap();
   assert.equal(third.snapshotId, 3);
   assert.deepEqual(
     third.elements.map((el: { id: number }) => el.id),
-    [5, 6],
+    [1, 2],
+  );
+  assert.deepEqual(
+    third.elements.map((el: { change?: string }) => el.change),
+    ["same", "same"],
   );
 
-  const replaced = await request({ type: "target", id: 5 });
+  const replaced = await request({ type: "target", id: 1 });
   assert.equal(replaced.ok, true, replaced.error);
   assert.equal(replaced.target.label, "Alpha");
 
-  // Pre-navigation ids are rejected as soon as the document identity changes.
-  const previousDocId = third.docId;
-  delete (domWindow as unknown as { __chromeCtlDocId?: string }).__chromeCtlDocId;
+  // Removing an element reports its id as removed and drops it from the index.
+  domWindow.document.getElementById("b")!.remove();
   const fourth = await snap();
-  assert.notEqual(fourth.docId, previousDocId);
-  assert.equal(fourth.snapshotId, 4);
+  assert.deepEqual(
+    fourth.elements.map((el: { id: number }) => el.id),
+    [1],
+  );
+  assert.deepEqual(fourth.removed, [2]);
+
+  const gone = await request({ type: "target", id: 2 });
+  assert.equal(gone.ok, false);
+  assert.match(gone.error, /element \[2\] not found/);
+
+  // Pre-navigation ids are rejected as soon as the document identity changes.
+  const previousDocId = fourth.docId;
+  delete (domWindow as unknown as { __chromeCtlDocId?: string }).__chromeCtlDocId;
+  const fifth = await snap();
+  assert.notEqual(fifth.docId, previousDocId);
+  assert.equal(fifth.snapshotId, 5);
+  assert.deepEqual(
+    fifth.elements.map((el: { change?: string }) => el.change),
+    ["added"],
+  );
+  const freshId = fifth.elements[0].id as number;
 
   const stale = await request({
     type: "target",
-    id: 5,
+    id: freshId,
     expectedDocId: previousDocId,
   });
   assert.equal(stale.ok, false);
@@ -144,8 +169,8 @@ test("snapshot ids are unique per document and stale identity is rejected", asyn
   // The fresh identity is accepted.
   const fresh = await request({
     type: "target",
-    id: 7,
-    expectedDocId: fourth.docId,
+    id: freshId,
+    expectedDocId: fifth.docId,
   });
   assert.equal(fresh.ok, true, fresh.error);
 });

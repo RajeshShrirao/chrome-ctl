@@ -219,6 +219,24 @@ test("snapshot traverses same-origin iframes and reports top-frame coordinates",
   assert.deepEqual(labels(clipped), ["Top"]);
 });
 
+test("snapshot emits open shadow content at the host's position", () => {
+  const doc = makeDoc(
+    '<button id="before">Before</button><div id="host"></div><button id="after">After</button>',
+  );
+  const host = doc.getElementById("host")!;
+  const root = host.attachShadow({ mode: "open" });
+  const shadowButton = doc.createElement("button");
+  shadowButton.textContent = "Inside";
+  root.appendChild(shadowButton);
+
+  stubRect(doc.getElementById("before")!, { x: 10, y: 10, w: 100, h: 30 });
+  stubRect(shadowButton, { x: 10, y: 50, w: 100, h: 30 });
+  stubRect(doc.getElementById("after")!, { x: 10, y: 90, w: 100, h: 30 });
+
+  const snap = snapshot(doc, { all: true }, VIEW);
+  assert.deepEqual(labels(snap), ["Before", "Inside", "After"]);
+});
+
 test("resolver tier search finds an element inside an open shadow root", async () => {
   const doc = makeDoc('<div id="host"></div>');
   const root = doc.getElementById("host")!.attachShadow({ mode: "open" });
@@ -248,4 +266,22 @@ test("resolver tier search finds an element inside an open shadow root", async (
     { x: 40, y: 60, w: 120, h: 32 },
   );
   assert.equal(index.get(resolved.id), button);
+});
+
+test("resolver matching is side-effect-free and does not scroll the page", async () => {
+  const doc = makeDoc('<button data-testid="no-scroll">Click</button>');
+  const button = doc.querySelector("button")!;
+  stubRect(button, { x: 10, y: 20, w: 80, h: 30 });
+  stubClientRects(button);
+
+  let scrollCalls = 0;
+  (button as Element & { scrollIntoView: () => void }).scrollIntoView = () => {
+    scrollCalls += 1;
+  };
+
+  const index = new Map<number, Element>();
+  const resolved = await resolveTarget(doc, index, { testId: "no-scroll" }, 0);
+
+  assert.equal(resolved.matchedTier, "testId");
+  assert.equal(scrollCalls, 0);
 });

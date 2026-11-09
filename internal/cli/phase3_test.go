@@ -720,3 +720,16 @@ func TestMapRPCErrorActionCodes(t *testing.T) {
 		t.Errorf("mapRPCError(internal) = %v, want %q", err, want)
 	}
 }
+
+func TestSeedFlagsRegistered(t *testing.T) {
+	root := NewRoot()
+	for _, name := range []string{"click", "clickat", "type", "press", "scroll"} {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatalf("root.Find(%s) = %v", name, err)
+		}
+		if cmd.Flags().Lookup("seed") == nil {
+			t.Errorf("%s missing --seed flag", name)
+		}
+	}
+}

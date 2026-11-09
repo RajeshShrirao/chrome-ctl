@@ -582,10 +582,14 @@ export function deepRoots(doc: Document): QueryRoot[] {
 }
 
 /** `querySelectorAll` evaluated against every deep root, deduplicated. */
-export function queryDeepAll(doc: Document, selector: string): Element[] {
+export function queryDeepAll(
+  doc: Document,
+  selector: string,
+  roots: QueryRoot[] = deepRoots(doc),
+): Element[] {
   const matches: Element[] = [];
   const seen = new Set<Element>();
-  for (const root of deepRoots(doc)) {
+  for (const root of roots) {
     let found: Element[];
     try {
       found = Array.from(root.querySelectorAll(selector));
@@ -611,18 +615,17 @@ function isDisabled(el: Element): boolean {
   return control.disabled === true || el.getAttribute("aria-disabled") === "true";
 }
 
-/** Visible, enabled, and sized after centering the element in the viewport. */
+/**
+ * Visible, enabled, and sized. Matching is deliberately side-effect-free: the
+ * caller reveals (scrolls/focuses) only after a target is chosen, so polling a
+ * resolver never moves the page out from under the user.
+ */
 function isUsable(el: Element): boolean {
   if (!el.isConnected || isDisabled(el)) {
     return false;
   }
   if (el.getClientRects().length === 0) {
     return false;
-  }
-  try {
-    el.scrollIntoView({ block: "center" });
-  } catch {
-    // Non-fatal: measurement below still reflects the current layout.
   }
   const rect = el.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
@@ -637,10 +640,14 @@ function findVisible(elements: Element[]): Element | null {
   return null;
 }
 
-function findByTestId(doc: Document, testId: string): Element | null {
+function findByTestId(
+  doc: Document,
+  testId: string,
+  roots: QueryRoot[],
+): Element | null {
   for (const attribute of TEST_ID_ATTRIBUTES) {
     const matches: Element[] = [];
-    for (const el of queryDeepAll(doc, `[${attribute}]`)) {
+    for (const el of queryDeepAll(doc, `[${attribute}]`, roots)) {
       if (el.getAttribute(attribute) === testId) {
         matches.push(el);
       }
@@ -676,6 +683,7 @@ function findByAriaLabel(
   doc: Document,
   ariaLabel: string,
   role: string | undefined,
+  roots: QueryRoot[],
 ): Element | null {
   const expected = normalizeText(ariaLabel).slice(0, MAX_NAME_CHARS);
   if (!expected) {
@@ -686,7 +694,7 @@ function findByAriaLabel(
     ? implicitSelectorFor(normalizedRole)
     : ARIA_CANDIDATE_SELECTOR;
 
-  for (const el of queryDeepAll(doc, selector)) {
+  for (const el of queryDeepAll(doc, selector, roots)) {
     if (accessibleName(el, ownerDocumentOf(el, doc)) === expected && isUsable(el)) {
       return el;
     }
@@ -694,13 +702,17 @@ function findByAriaLabel(
   return null;
 }
 
-function findByText(doc: Document, text: string): Element | null {
+function findByText(
+  doc: Document,
+  text: string,
+  roots: QueryRoot[],
+): Element | null {
   const expected = normalizeText(text);
   if (!expected) {
     return null;
   }
 
-  const candidates = queryDeepAll(doc, TEXT_CANDIDATE_SELECTOR);
+  const candidates = queryDeepAll(doc, TEXT_CANDIDATE_SELECTOR, roots);
   for (const el of candidates) {
     if (visibleText(el) === expected && isUsable(el)) {
       return el;
@@ -716,12 +728,16 @@ function findByText(doc: Document, text: string): Element | null {
   return null;
 }
 
-function findByXpath(doc: Document, xpath: string): Element | null {
+function findByXpath(
+  doc: Document,
+  xpath: string,
+  roots: QueryRoot[],
+): Element | null {
   // XPathResult.FIRST_ORDERED_NODE_TYPE === 9; the numeric constant works in
   // workers and jsdom realms that do not expose the constructor globally.
   // Shadow trees are invisible to XPath, so evaluate once per owning document.
   const seenDocs = new Set<Document>();
-  for (const root of deepRoots(doc)) {
+  for (const root of roots) {
     const owner =
       root.nodeType === 9
         ? (root as Document)
@@ -743,8 +759,12 @@ function findByXpath(doc: Document, xpath: string): Element | null {
   return null;
 }
 
-function findByCssSelector(doc: Document, selector: string): Element | null {
-  for (const el of queryDeepAll(doc, selector)) {
+function findByCssSelector(
+  doc: Document,
+  selector: string,
+  roots: QueryRoot[],
+): Element | null {
+  for (const el of queryDeepAll(doc, selector, roots)) {
     if (isUsable(el)) {
       return el;
     }
@@ -757,7 +777,11 @@ export interface TargetMatch {
   tier: ResolveTier;
 }
 
-/** Single pass over the tiers in contract order. */
+/**
+ * Single pass over the tiers in contract order. Deep roots (shadow roots and
+ * same-origin frames) are collected once per call and shared by every tier, so
+ * a five-tier miss costs one traversal instead of five.
+ */
 export function findTargetOnce(doc: Document, target: MacroTarget): TargetMatch | null {
   let searchDoc = doc;
   if (target.framePath) {
@@ -767,37 +791,38 @@ export function findTargetOnce(doc: Document, target: MacroTarget): TargetMatch 
     }
     searchDoc = resolved;
   }
+  const roots = deepRoots(searchDoc);
 
   if (target.testId) {
-    const el = findByTestId(searchDoc, target.testId);
+    const el = findByTestId(searchDoc, target.testId, roots);
     if (el) {
       return { element: el, tier: "testId" };
     }
   }
 
   if (target.ariaLabel) {
-    const el = findByAriaLabel(searchDoc, target.ariaLabel, target.role);
+    const el = findByAriaLabel(searchDoc, target.ariaLabel, target.role, roots);
     if (el) {
       return { element: el, tier: "ariaLabel" };
     }
   }
 
   if (target.text) {
-    const el = findByText(searchDoc, target.text);
+    const el = findByText(searchDoc, target.text, roots);
     if (el) {
       return { element: el, tier: "text" };
     }
   }
 
   if (target.xpath) {
-    const el = findByXpath(searchDoc, target.xpath);
+    const el = findByXpath(searchDoc, target.xpath, roots);
     if (el) {
       return { element: el, tier: "xpath" };
     }
   }
 
   if (target.cssSelector) {
-    const el = findByCssSelector(searchDoc, target.cssSelector);
+    const el = findByCssSelector(searchDoc, target.cssSelector, roots);
     if (el) {
       return { element: el, tier: "cssSelector" };
     }

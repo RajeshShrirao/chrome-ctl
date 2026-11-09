@@ -60,6 +60,8 @@ interface PendingRequest {
   type: string;
   status: number;
   startedAt: number;
+  /** Navigation epoch; completions from an older document are ignored. */
+  epoch: number;
 }
 
 /** One tab's request ring plus the in-flight set. */
@@ -70,6 +72,55 @@ export class NetLog {
   requestsSeen = 0;
 
   private pending = new Map<string, PendingRequest>();
+  private epoch = 0;
+  private listeners = new Set<() => void>();
+
+  /** Register a listener called on every request lifecycle change. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+
+  /**
+   * Earliest timestamp at which quiet is possible, given the current in-flight
+   * set. A waiter wakes then instead of polling every 100 ms.
+   */
+  nextQuietAt(
+    now = Date.now(),
+    quietMs = DEFAULT_QUIET_MS,
+    longPollMs = DEFAULT_LONG_POLL_MS,
+  ): number {
+    const active = this.activeRequests(now, longPollMs);
+    if (active.length === 0) {
+      return Math.max(now, this.tracker.lastActivityAt + quietMs);
+    }
+    let earliestExclusion = Number.POSITIVE_INFINITY;
+    for (const request of active) {
+      earliestExclusion = Math.min(earliestExclusion, request.startedAt + longPollMs);
+    }
+    return Math.max(earliestExclusion, this.tracker.lastActivityAt + quietMs);
+  }
+
+  private activeRequests(now: number, longPollMs: number): PendingRequest[] {
+    const active: PendingRequest[] = [];
+    for (const request of this.pending.values()) {
+      if (request.epoch !== this.epoch) {
+        continue;
+      }
+      if (now - request.startedAt < longPollMs) {
+        active.push(request);
+      }
+    }
+    return active;
+  }
 
   get inflight(): number {
     return this.pending.size;
@@ -79,13 +130,7 @@ export class NetLog {
     now = Date.now(),
     longPollMs = DEFAULT_LONG_POLL_MS,
   ): number {
-    let count = 0;
-    for (const req of this.pending.values()) {
-      if (now - req.startedAt < longPollMs) {
-        count += 1;
-      }
-    }
-    return count;
+    return this.activeRequests(now, longPollMs).length;
   }
 
   isIgnoredType(type: string): boolean {
@@ -108,10 +153,12 @@ export class NetLog {
       type,
       status: 0,
       startedAt: now,
+      epoch: this.epoch,
     });
     this.requestsSeen += 1;
     this.tracker.setInflight(this.pending.size);
     this.tracker.noteActivity(now);
+    this.notify();
   }
 
   response(requestId: string, status: number, now = Date.now()): void {
@@ -121,6 +168,7 @@ export class NetLog {
     }
     request.status = status;
     this.tracker.noteActivity(now);
+    this.notify();
   }
 
   finish(requestId: string, now = Date.now()): void {
@@ -133,7 +181,15 @@ export class NetLog {
 
   /** Records a navigation so a stale quiet window cannot match immediately. */
   noteNavigation(now = Date.now()): void {
+    this.epoch += 1;
     this.tracker.noteActivity(now);
+    this.notify();
+  }
+
+  /** Explicit activity (for example, after Network.enable) wakes waiters. */
+  noteActivity(now = Date.now()): void {
+    this.tracker.noteActivity(now);
+    this.notify();
   }
 
   restore(entries: NetEntry[], enabledAt: number): void {
@@ -175,6 +231,7 @@ export class NetLog {
     if (this.entries.length > MAX_NET_ENTRIES) {
       this.entries.splice(0, this.entries.length - MAX_NET_ENTRIES);
     }
+    this.notify();
   }
 }
 
@@ -365,7 +422,7 @@ export async function onAttached(tabId: number): Promise<void> {
     });
     // Observation starts now: without this, a wait can declare quiet while the
     // events from before Network.enable are still in flight and never seen.
-    log.tracker.noteActivity();
+    log.noteActivity();
     if (log.enabledAt === 0) {
       log.enabledAt = Date.now();
       schedulePersist(tabId);
@@ -444,28 +501,61 @@ export async function waitForQuiet(
   const started = Date.now();
   const baseline = log.requestsSeen;
 
-  for (;;) {
-    const now = Date.now();
-    const activeInflight = log.inflightExcludingLongPoll(now, longPollMs);
-    const quiet =
-      activeInflight === 0 && now - log.tracker.lastActivityAt >= quietMs;
-    if (quiet) {
-      return {
-        matched: true,
-        waitedMs: now - started,
-        inflight: activeInflight,
-        requests: log.requestsSeen - baseline,
-      };
-    }
-    if (now - started >= timeoutMs) {
-      return {
-        matched: false,
-        waitedMs: now - started,
-        inflight: activeInflight,
-        requests: log.requestsSeen - baseline,
-        reason: "timeout",
-      };
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  }
+  return new Promise<QuietWait>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    let unsubscribe = (): void => {};
+
+    const finish = (result: QuietWait): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      unsubscribe();
+      resolve(result);
+    };
+
+    const check = (): void => {
+      if (settled) {
+        return;
+      }
+      const now = Date.now();
+      const activeInflight = log.inflightExcludingLongPoll(now, longPollMs);
+      const quiet =
+        activeInflight === 0 && now - log.tracker.lastActivityAt >= quietMs;
+
+      if (quiet) {
+        finish({
+          matched: true,
+          waitedMs: now - started,
+          inflight: activeInflight,
+          requests: log.requestsSeen - baseline,
+        });
+        return;
+      }
+      if (now - started >= timeoutMs) {
+        finish({
+          matched: false,
+          waitedMs: now - started,
+          inflight: activeInflight,
+          requests: log.requestsSeen - baseline,
+          reason: "timeout",
+        });
+        return;
+      }
+
+      const deadline = started + timeoutMs;
+      const due = Math.min(deadline, log.nextQuietAt(now, quietMs, longPollMs));
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(check, Math.max(1, due - now));
+    };
+
+    unsubscribe = log.subscribe(check);
+    check();
+  });
 }

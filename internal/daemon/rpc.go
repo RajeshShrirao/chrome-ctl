@@ -7,51 +7,30 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rajeshshrirao/chrome-ctl/internal/macro"
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
 )
 
 const maxRPCBodyBytes = 1 << 20
 
 const (
-	actionTypeTimeout   = 300 * time.Second
-	actionMediumTimeout = 60 * time.Second
-	actionPressTimeout  = 20 * time.Second
-	pageWaitTimeout     = 45 * time.Second
-	mediaCaptureTimeout = 30 * time.Second
-	pageDescribeTimeout = 5 * time.Second
-	pageResolveTimeout  = 20 * time.Second
-	pageEvalTimeout     = 35 * time.Second
-	authSSOTimeout      = 60 * time.Second
-	windowCreateTimeout = 30 * time.Second
+	actionTypeTimeout   = protocol.ActionTypeTimeout
+	actionMediumTimeout = protocol.ActionMediumTimeout
+	actionPressTimeout  = protocol.ActionPressTimeout
+	pageWaitTimeout     = protocol.PageWaitTimeout
+	mediaCaptureTimeout = protocol.MediaCaptureTimeout
+	pageDescribeTimeout = protocol.PageDescribeTimeout
+	pageResolveTimeout  = protocol.PageResolveTimeout
+	pageEvalTimeout     = protocol.PageEvalTimeout
+	authSSOTimeout      = protocol.AuthSSOTimeout
+	windowCreateTimeout = protocol.WindowCreateTimeout
 )
 
 // forwardTimeoutFor gives long-running actions a budget beyond the default
-// forward timeout; the extension, offscreen relay, and CLI use matching budgets.
+// forward timeout; the extension, offscreen relay, and CLI use matching budgets
+// generated from internal/protocol/contract.json.
 func forwardTimeoutFor(method string, fallback time.Duration) time.Duration {
-	switch method {
-	case protocol.MethodActionType:
-		return actionTypeTimeout
-	case protocol.MethodActionClick, protocol.MethodActionScroll, protocol.MethodActionUpload:
-		return actionMediumTimeout
-	case protocol.MethodActionPress:
-		return actionPressTimeout
-	case protocol.MethodPageWait:
-		return pageWaitTimeout
-	case protocol.MethodMediaCapture:
-		return mediaCaptureTimeout
-	case protocol.MethodPageDescribe:
-		return pageDescribeTimeout
-	case protocol.MethodPageResolve:
-		return pageResolveTimeout
-	case protocol.MethodPageEval:
-		return pageEvalTimeout
-	case protocol.MethodAuthSSO:
-		return authSSOTimeout
-	case protocol.MethodWindowCreate, protocol.MethodWindowEnsure:
-		return windowCreateTimeout
-	default:
-		return fallback
-	}
+	return protocol.TimeoutFor(method, fallback)
 }
 
 func (d *daemon) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +73,8 @@ func (d *daemon) handleSessionStatus(ctx context.Context, req protocol.Request) 
 			Status:             "ok",
 			ExtensionConnected: false,
 			Version:            d.cfg.Version,
+			ProtocolVersion:    protocol.ProtocolVersion,
+			Capabilities:       protocol.Capabilities,
 			UptimeSec:          d.uptimeSec(),
 		})
 	}
@@ -113,6 +94,10 @@ func (d *daemon) handleSessionStatus(ctx context.Context, req protocol.Request) 
 		Status:             "ok",
 		ExtensionConnected: true,
 		Version:            d.cfg.Version,
+		ProtocolVersion:    protocol.ProtocolVersion,
+		Capabilities:       protocol.Capabilities,
+		ExtensionVersion:   ext.ProtocolVersion,
+		ExtensionCaps:      ext.Capabilities,
 		UptimeSec:          d.uptimeSec(),
 		ActiveTab:          ext.ActiveTab,
 		TabCount:           ext.TabCount,
@@ -141,6 +126,42 @@ func (d *daemon) logForwardFailure(method string, rpcErr *protocol.RPCError) {
 }
 
 func (d *daemon) forward(ctx context.Context, req protocol.Request) (json.RawMessage, *protocol.RPCError) {
+	plan := scheduleFor(req.Method, req.Params)
+	release, rpcErr := d.sched.acquire(ctx, plan.key, plan.write)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	defer release()
+
+	if plan.singleFlight {
+		return d.sched.singleFlight(
+			ctx,
+			singleFlightKey(plan, req),
+			func() (json.RawMessage, *protocol.RPCError) {
+				return d.forwardRaw(ctx, req)
+			},
+		)
+	}
+
+	if key := macro.IdempotencyKey(ctx); plan.write && key != "" {
+		result, rpcErr := d.sched.idempotent(plan.key+"\x00"+req.Method+"\x00"+key, func() (json.RawMessage, *protocol.RPCError) {
+			return d.forwardRaw(ctx, req)
+		})
+		d.sched.clearCache()
+		return result, rpcErr
+	}
+
+	result, rpcErr := d.forwardRaw(ctx, req)
+	if plan.write {
+		// A cached read from before this mutation must not be served after it.
+		d.sched.clearCache()
+	}
+	return result, rpcErr
+}
+
+// forwardRaw writes one request to the extension and waits for its response.
+// Callers must already hold the per-tab gate.
+func (d *daemon) forwardRaw(ctx context.Context, req protocol.Request) (json.RawMessage, *protocol.RPCError) {
 	ext := d.extension()
 	if ext == nil {
 		return nil, &protocol.RPCError{Code: protocol.ErrConnection, Message: "chrome extension not connected"}

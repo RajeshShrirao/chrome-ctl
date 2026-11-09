@@ -6,86 +6,14 @@ export const STALE_MS = 45_000;
 export const TOKEN_KEY = "chromeCtlToken";
 export const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 
-export const Methods = {
-  systemReady: "system.ready",
-  systemPing: "system.ping",
-  sessionStatus: "session.status",
-  windowList: "window.list",
-  windowCreate: "window.create",
-  windowEnsure: "window.ensure",
-  windowUse: "window.use",
-  windowClose: "window.close",
-  tabList: "tab.list",
-  tabOpen: "tab.open",
-  tabSwitch: "tab.switch",
-  pageSnap: "page.snap",
-  pageRead: "page.read",
-  pageWait: "page.wait",
-  actionClick: "action.click",
-  actionType: "action.type",
-  actionPress: "action.press",
-  actionScroll: "action.scroll",
-  actionUpload: "action.upload",
-  mediaShot: "media.shot",
-  mediaRecStart: "media.rec_start",
-  mediaRecStop: "media.rec_stop",
-  mediaCapture: "media.capture",
-  authSSO: "auth.sso",
-  pageDescribe: "page.describe",
-  pageResolve: "page.resolve",
-  pageEval: "page.eval",
-  pageAttr: "page.attr",
-  pageNet: "page.net",
-  pageFormState: "page.formstate",
-} as const;
-
-export const ErrorCodes = {
-  connection: -32000,
-  elementNotFound: -32001,
-  elementNotInteractable: -32002,
-  tabNotFound: -32003,
-  debuggerDetached: -32004,
-  ssoTimeout: -32005,
-  unauthorized: -32006,
-  navigationFailed: -32007,
-  macroStepFailed: -32008,
-  dispatchedUnconfirmed: -32009,
-  snapshotStale: -32010,
-  featureDisabled: -32011,
-  methodNotFound: -32601,
-  internal: -32603,
-} as const;
-
-export const DEFAULT_RPC_TIMEOUT_MS = 10_000;
-
-/** Actions can take minutes (humanized typing); every hop must use the same budget. */
-export function rpcTimeoutMs(method: string): number {
-  switch (method) {
-    case Methods.actionType:
-      return 300_000;
-    case Methods.actionClick:
-    case Methods.actionScroll:
-    case Methods.actionUpload:
-      return 60_000;
-    case Methods.actionPress:
-      return 20_000;
-    case Methods.pageWait:
-      return 30_000;
-    case Methods.mediaCapture:
-      return 30_000;
-    case Methods.authSSO:
-      return 60_000;
-    case Methods.pageResolve:
-      return 20_000;
-    case Methods.pageDescribe:
-      return 5_000;
-    case Methods.windowCreate:
-    case Methods.windowEnsure:
-      return 30_000;
-    default:
-      return DEFAULT_RPC_TIMEOUT_MS;
-  }
-}
+export {
+  CAPABILITIES,
+  DEFAULT_RPC_TIMEOUT_MS,
+  ErrorCodes,
+  Methods,
+  PROTOCOL_VERSION,
+  rpcTimeoutMs,
+} from "./protocol.generated.ts";
 
 export interface RpcRequest {
   jsonrpc: "2.0";
@@ -111,10 +39,14 @@ export interface ExtensionStatusResult {
   activeTab?: ActiveTab | null;
   tabCount: number;
   debuggerAttached: boolean;
+  protocolVersion?: string;
+  capabilities?: string[];
 }
 
 export interface SystemReadyParams {
   version: string;
+  protocolVersion?: string;
+  capabilities?: string[];
   daemonUptimeSec: number;
   attachedTabs: number[];
 }
@@ -182,6 +114,8 @@ export interface ViewportInfo {
   percent: number;
 }
 
+export type SnapChange = "added" | "same" | "updated" | "moved";
+
 export interface SnapElement {
   id: number;
   tag: string;
@@ -194,6 +128,8 @@ export interface SnapElement {
   w: number;
   h: number;
   frame?: string;
+  /** Change since the previous snapshot in this document. */
+  change?: SnapChange;
 }
 
 export interface SnapResult {
@@ -207,6 +143,8 @@ export interface SnapResult {
   elements: SnapElement[];
   formattedText: string;
   framesSummary?: string;
+  /** Ids that left the document since the previous snapshot. */
+  removed?: number[];
 }
 
 export interface ReadTable {
@@ -248,6 +186,7 @@ export interface ActionClickParams {
   doubleClick?: boolean;
   snap?: boolean;
   timeoutMs?: number;
+  seed?: string;
 }
 
 export interface ActionClickResult {
@@ -258,6 +197,7 @@ export interface ActionClickResult {
   landedOn?: string;
   urlChanged?: boolean;
   consequence?: string;
+  seed?: string;
   durationMs: number;
   dispatchMs?: number;
   settleMs?: number;
@@ -271,6 +211,7 @@ export interface ActionTypeParams {
   enter?: boolean;
   typoRate?: number;
   snap?: boolean;
+  seed?: string;
 }
 
 export interface ActionTypeResult {
@@ -282,6 +223,7 @@ export interface ActionTypeResult {
   verified: boolean;
   verification?: string;
   readBack?: string;
+  seed?: string;
   snapshot?: SnapResult;
 }
 
@@ -289,11 +231,13 @@ export interface ActionPressParams {
   tabId?: number;
   key: string;
   modifiers?: string[];
+  seed?: string;
 }
 
 export interface ActionPressResult {
   success: boolean;
   key: string;
+  seed?: string;
 }
 
 export interface ActionScrollParams {
@@ -301,6 +245,7 @@ export interface ActionScrollParams {
   direction?: "down" | "up";
   amount?: number;
   toSelector?: string;
+  seed?: string;
 }
 
 export interface ActionScrollResult {
@@ -309,6 +254,7 @@ export interface ActionScrollResult {
   viewportPercent: number;
   target?: string;
   frame?: string;
+  seed?: string;
 }
 
 export interface ActionUploadParams {

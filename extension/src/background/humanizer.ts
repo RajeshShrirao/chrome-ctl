@@ -1,6 +1,11 @@
 /**
  * Pure humanizer math for Phase 3 actions. No chrome.* access and no timers:
  * every delay is returned as data so the unit tests can run under plain Node.
+ *
+ * Determinism: every planner takes an optional `Rng`. When an action starts it
+ * creates one with `createRng(seed)` (crypto-seeded when no seed is supplied),
+ * passes it to the planners, and reports `rng.seed()` in the result so the same
+ * motion can be replayed exactly.
  */
 
 export interface Point2D {
@@ -17,6 +22,8 @@ export interface PathPoint {
 export interface MousePath {
   points: PathPoint[];
   durationMs: number;
+  /** Seed that reproduces this plan. */
+  seed: string;
 }
 
 export interface ClickRect {
@@ -29,7 +36,7 @@ export interface ClickRect {
 }
 
 export interface TypingStep {
-  kind: "char" | "key";
+  kind: "char" | "key" | "insert";
   value: string;
   /** Pause after key-up (or after the character dispatch). */
   delayMs: number;
@@ -40,6 +47,8 @@ export interface TypingStep {
 export interface TypingPlan {
   steps: TypingStep[];
   typosInjected: number;
+  /** Seed that reproduces this plan. */
+  seed: string;
 }
 
 export interface ScrollTick {
@@ -52,6 +61,8 @@ export interface ScrollTick {
 export interface ScrollPlan {
   ticks: ScrollTick[];
   totalPauseMs: number;
+  /** Seed that reproduces this plan. */
+  seed: string;
 }
 
 export interface KeyDefinition {
@@ -62,56 +73,184 @@ export interface KeyDefinition {
   shift?: boolean;
 }
 
+/** Injectable randomness so every action can be replayed from a seed. */
+export interface Rng {
+  /** Uniform sample in [0, 1). */
+  next(): number;
+  /** Standard normal sample (mean 0, sd 1). */
+  gaussian(): number;
+  /** Hex seed that reproduces this stream from the start. */
+  seed(): string;
+}
+
+type State = [number, number, number, number];
+
+const TWO_PI = Math.PI * 2;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-let gaussianSpare: number | undefined;
+function rotl(value: number, bits: number): number {
+  return ((value << bits) | (value >>> (32 - bits))) >>> 0;
+}
+
+function stateToSeed(state: State): string {
+  return state.map((word) => (word >>> 0).toString(16).padStart(8, "0")).join("");
+}
+
+/** FNV-1a, used to turn arbitrary seed strings into xoshiro state words. */
+function fnv1a(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function cryptoState(): State {
+  const words = new Uint32Array(4);
+  const cryptoObject = (
+    globalThis as { crypto?: { getRandomValues?: (array: Uint32Array) => Uint32Array } }
+  ).crypto;
+  if (cryptoObject && typeof cryptoObject.getRandomValues === "function") {
+    cryptoObject.getRandomValues(words);
+  } else {
+    for (let index = 0; index < words.length; index += 1) {
+      words[index] = Math.floor(Math.random() * 0x100000000);
+    }
+  }
+  if ((words[0]! | words[1]! | words[2]! | words[3]!) === 0) {
+    words[0] = 1;
+  }
+  return [words[0]!, words[1]!, words[2]!, words[3]!];
+}
+
+function stateFromSeed(seed: string): State {
+  const hex = seed.toLowerCase().replace(/[^0-9a-f]/g, "");
+  const state: State = [0, 0, 0, 0];
+  for (let index = 0; index < 4; index += 1) {
+    const chunk = hex.slice(index * 8, index * 8 + 8);
+    state[index] = chunk.length === 8 ? parseInt(chunk, 16) >>> 0 : 0;
+  }
+  if ((state[0] | state[1] | state[2] | state[3]) === 0) {
+    const hash = fnv1a(seed);
+    state[0] = hash || 1;
+    state[1] = (hash ^ 0x9e3779b9) >>> 0;
+    state[2] = 0x243f6a88;
+    state[3] = 0xb7e15162;
+  }
+  return state;
+}
+
+function rngFromState(state: State, seed: string): Rng {
+  let [a, b, c, d] = state;
+  let spare: number | undefined;
+
+  function nextUint32(): number {
+    const result = Math.imul(rotl(Math.imul(b, 5) >>> 0, 7), 9) >>> 0;
+    const t = (b << 9) >>> 0;
+    c ^= a;
+    d ^= b;
+    b ^= c;
+    a ^= d;
+    c ^= t;
+    d = rotl(d, 11);
+    return result;
+  }
+
+  function next(): number {
+    return nextUint32() / 0x100000000;
+  }
+
+  function gaussian(): number {
+    if (spare !== undefined) {
+      const value = spare;
+      spare = undefined;
+      return value;
+    }
+    let u = 0;
+    let v = 0;
+    while (u === 0) {
+      u = next();
+    }
+    while (v === 0) {
+      v = next();
+    }
+    const magnitude = Math.sqrt(-2 * Math.log(u));
+    spare = magnitude * Math.sin(TWO_PI * v);
+    return magnitude * Math.cos(TWO_PI * v);
+  }
+
+  return { next, gaussian, seed: () => seed };
+}
+
+/**
+ * Create an xoshiro128** stream. A hex seed restores an exact stream; any other
+ * string is hashed into state so callers can use human-readable seeds.
+ */
+export function createRng(seed?: string): Rng {
+  if (seed !== undefined && seed !== "") {
+    return rngFromState(stateFromSeed(seed), seed);
+  }
+  const state = cryptoState();
+  return rngFromState(state, stateToSeed(state));
+}
+
+const defaultRng = createRng();
 
 /** Standard Box-Muller transform. */
-export function randomGaussian(mean: number, sd: number): number {
-  if (gaussianSpare !== undefined) {
-    const spare = gaussianSpare;
-    gaussianSpare = undefined;
-    return mean + sd * spare;
-  }
-
-  let u = 0;
-  let v = 0;
-  while (u === 0) {
-    u = Math.random();
-  }
-  while (v === 0) {
-    v = Math.random();
-  }
-
-  const magnitude = Math.sqrt(-2 * Math.log(u));
-  gaussianSpare = magnitude * Math.sin(2 * Math.PI * v);
-  return mean + sd * magnitude * Math.cos(2 * Math.PI * v);
+export function randomGaussian(mean: number, sd: number, rng: Rng = defaultRng): number {
+  return mean + sd * rng.gaussian();
 }
 
 /** Inclusive integer range. */
-export function randomInt(min: number, max: number): number {
+export function randomInt(min: number, max: number, rng: Rng = defaultRng): number {
   const lo = Math.ceil(min);
   const hi = Math.floor(max);
   if (hi <= lo) {
     return lo;
   }
-  return lo + Math.floor(Math.random() * (hi - lo + 1));
-}
-
-function sigmoid(tau: number): number {
-  return 1 / (1 + Math.exp(-10 * (tau - 0.5)));
+  return lo + Math.floor(rng.next() * (hi - lo + 1));
 }
 
 /**
- * Plan a cubic Bézier cursor path with Fitts's-law duration, sigmoid velocity
- * warping, and per-point perpendicular tremor.
+ * Minimum-jerk position profile: zero velocity and acceleration at both ends,
+ * which reads as a natural reaching motion.
+ */
+export function minimumJerk(tau: number): number {
+  const clamped = clamp(tau, 0, 1);
+  return clamped ** 3 * (10 - 15 * clamped + 6 * clamped ** 2);
+}
+
+/** Discrete Ornstein-Uhlenbeck tremor: mean-reverting, not white noise. */
+class Tremor {
+  private value = 0;
+  private readonly theta: number;
+  private readonly sigma: number;
+
+  constructor(theta = 0.15, sigma = 1.0) {
+    this.theta = theta;
+    this.sigma = sigma;
+  }
+
+  next(dt: number, rng: Rng): number {
+    const step = Math.max(dt, 1e-4);
+    this.value += -this.theta * this.value * step + this.sigma * Math.sqrt(step) * rng.gaussian();
+    return this.value;
+  }
+}
+
+/**
+ * Plan a cubic Bézier cursor path with Fitts's-law duration, a minimum-jerk
+ * velocity profile, OU tremor, and a small overshoot/correction for far targets.
  */
 export function planMousePath(
   from: Point2D,
   to: Point2D,
   targetWidth: number,
+  rng: Rng = defaultRng,
 ): MousePath {
   const deltaX = to.x - from.x;
   const deltaY = to.y - from.y;
@@ -121,31 +260,38 @@ export function planMousePath(
   const rawDuration =
     120 +
     80 * Math.log2(1 + distance / Math.max(targetWidth, 10)) +
-    randomGaussian(0, 25);
+    randomGaussian(0, 25, rng);
   const durationMs = Math.max(120, rawDuration);
 
   const theta = distance === 0 ? 0 : Math.atan2(deltaY, deltaX);
   const normalX = -Math.sin(theta);
   const normalY = Math.cos(theta);
+  const unitX = distance === 0 ? 0 : deltaX / distance;
+  const unitY = distance === 0 ? 0 : deltaY / distance;
 
-  const curvature1 = randomGaussian(0, 0.25 * distance);
-  const curvature2 = randomGaussian(0, 0.25 * distance);
+  const curvature1 = randomGaussian(0, 0.25 * distance, rng);
+  const curvature2 = randomGaussian(0, 0.25 * distance, rng);
 
   const control1X = from.x + deltaX / 3 + normalX * curvature1;
   const control1Y = from.y + deltaY / 3 + normalY * curvature1;
   const control2X = from.x + (2 * deltaX) / 3 + normalX * curvature2;
   const control2Y = from.y + (2 * deltaY) / 3 + normalY * curvature2;
 
-  const s0 = sigmoid(0);
-  const s1 = sigmoid(1);
-  const span = s1 - s0;
+  const overshoot = distance > 350 ? Math.min(18, distance * 0.02) : 0;
+  const overshootAt = (tau: number): number => {
+    if (overshoot === 0 || tau <= 0.78 || tau >= 1) {
+      return 0;
+    }
+    return overshoot * Math.sin(Math.PI * ((tau - 0.78) / 0.22));
+  };
 
+  const tremor = new Tremor();
   const points: PathPoint[] = [];
   let previousS = 0;
 
-  for (let i = 0; i < count; i += 1) {
-    const tau = count === 1 ? 1 : i / (count - 1);
-    const eased = (sigmoid(tau) - s0) / span;
+  for (let index = 0; index < count; index += 1) {
+    const tau = count === 1 ? 1 : index / (count - 1);
+    const eased = minimumJerk(tau);
     const inverse = 1 - tau;
 
     const bezierX =
@@ -159,28 +305,29 @@ export function planMousePath(
       3 * inverse * tau ** 2 * control2Y +
       tau ** 3 * to.y;
 
-    // Keep the endpoints pinned; jitter the interior of the motion.
-    const interior = distance > 0 && i > 0 && i < count - 1;
-    const jitter = interior ? randomGaussian(0, 0.8) : 0;
+    // Keep the endpoints pinned; jitter and overshoot only the interior motion.
+    const interior = distance > 0 && index > 0 && index < count - 1;
+    const jitter = interior ? tremor.next(1 / count, rng) : 0;
+    const overshootOffset = overshootAt(tau);
 
-    const delayMs = i === 0 ? 0 : Math.max(0, (eased - previousS) * durationMs);
+    const delayMs = index === 0 ? 0 : Math.max(0, (eased - previousS) * durationMs);
     previousS = eased;
 
     points.push({
-      x: bezierX + normalX * jitter,
-      y: bezierY + normalY * jitter,
+      x: bezierX + normalX * jitter + unitX * overshootOffset,
+      y: bezierY + normalY * jitter + unitY * overshootOffset,
       delayMs,
     });
   }
 
-  return { points, durationMs: Math.round(durationMs) };
+  return { points, durationMs: Math.round(durationMs), seed: rng.seed() };
 }
 
 /**
  * Gaussian click landing inside the element, inset 4px from each edge.
  * Elements smaller than 8px in either axis collapse to the center.
  */
-export function clickLanding(rect: ClickRect): Point2D {
+export function clickLanding(rect: ClickRect, rng: Rng = defaultRng): Point2D {
   const right = typeof rect.right === "number" ? rect.right : rect.left + rect.width;
   const bottom = typeof rect.bottom === "number" ? rect.bottom : rect.top + rect.height;
   const centerX = rect.left + rect.width / 2;
@@ -190,8 +337,8 @@ export function clickLanding(rect: ClickRect): Point2D {
     return { x: centerX, y: centerY };
   }
 
-  const x = centerX + randomGaussian(0, rect.width / 6);
-  const y = centerY + randomGaussian(0, rect.height / 6);
+  const x = centerX + randomGaussian(0, rect.width / 6, rng);
+  const y = centerY + randomGaussian(0, rect.height / 6, rng);
 
   return {
     x: clamp(x, rect.left + 4, right - 4),
@@ -242,80 +389,107 @@ const QWERTY_NEIGHBORS: Record<string, string[]> = {
   0: ["9", "o", "p"],
 };
 
-function flightTimeMs(): number {
-  return Math.exp(randomGaussian(4.2, 0.3));
+function flightTimeMs(rng: Rng): number {
+  // Log-normal flight times: mostly ~65ms, with an occasional slow key.
+  return Math.exp(randomGaussian(4.2, 0.3, rng));
 }
 
-function adjacentKey(ch: string): string | null {
+function adjacentKey(ch: string, rng: Rng): string | null {
   const lower = ch.toLowerCase();
   const neighbors = QWERTY_NEIGHBORS[lower];
   if (!neighbors || neighbors.length === 0) {
     return null;
   }
-  return neighbors[randomInt(0, neighbors.length - 1)] ?? null;
+  return neighbors[randomInt(0, neighbors.length - 1, rng)] ?? null;
+}
+
+type SegmenterLike = {
+  segment(input: string): Iterable<{ segment: string }>;
+};
+
+function graphemes(text: string): string[] {
+  const SegmenterCtor = (
+    Intl as unknown as { Segmenter?: new (locales?: string, options?: { granularity: string }) => SegmenterLike }
+  ).Segmenter;
+  if (SegmenterCtor) {
+    const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
+    return Array.from(segmenter.segment(text), (part) => part.segment);
+  }
+  return Array.from(text);
+}
+
+function isTypeable(grapheme: string): boolean {
+  try {
+    keyDefinition(grapheme);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Plan cadence typing. Each character emits one step (the down/hold/up cycle is
+ * Plan cadence typing. Each grapheme emits one step (the down/hold/up cycle is
  * described by `holdMs` + `delayMs`), with optional typo/backspace bursts.
+ * Graphemes with no key code are emitted as `insert` steps so the executor can
+ * use `Input.insertText`.
  */
-export function planTyping(text: string, typoRate: number): TypingPlan {
+export function planTyping(text: string, typoRate: number, rng: Rng = defaultRng): TypingPlan {
   const rate = Number.isFinite(typoRate) ? clamp(typoRate, 0, 1) : 0;
   const steps: TypingStep[] = [];
   let typosInjected = 0;
   let previous = "";
 
-  for (const ch of text) {
-    if (ch === "\n") {
+  for (const ch of graphemes(text)) {
+    if (ch === "\n" || ch === "\r\n") {
       steps.push({
         kind: "key",
         value: "Enter",
-        delayMs: Math.round(flightTimeMs()),
-        holdMs: randomInt(45, 85),
+        delayMs: Math.round(flightTimeMs(rng)),
+        holdMs: randomInt(45, 85, rng),
       });
       previous = "\n";
       continue;
     }
 
-    let delay = flightTimeMs();
+    let delay = flightTimeMs(rng);
     if (COMMON_BIGRAMS.has(`${previous}${ch}`.toLowerCase())) {
       delay *= 0.65;
     }
     if (ch === " ") {
-      delay += randomInt(120, 280);
+      delay += randomInt(120, 280, rng);
     } else if (PUNCTUATION.has(ch)) {
-      delay += randomInt(250, 550);
+      delay += randomInt(250, 550, rng);
     }
 
-    if (rate > 0 && Math.random() < rate) {
-      const wrong = adjacentKey(ch);
+    if (rate > 0 && rng.next() < rate && isTypeable(ch)) {
+      const wrong = adjacentKey(ch, rng);
       if (wrong !== null) {
         typosInjected += 1;
         steps.push({
           kind: "char",
           value: wrong,
-          delayMs: randomInt(140, 260),
-          holdMs: randomInt(45, 85),
+          delayMs: randomInt(140, 260, rng),
+          holdMs: randomInt(45, 85, rng),
         });
         steps.push({
           kind: "key",
           value: "Backspace",
-          delayMs: randomInt(90, 180),
-          holdMs: randomInt(45, 85),
+          delayMs: randomInt(90, 180, rng),
+          holdMs: randomInt(45, 85, rng),
         });
       }
     }
 
     steps.push({
-      kind: "char",
+      kind: isTypeable(ch) ? "char" : "insert",
       value: ch,
       delayMs: Math.max(0, Math.round(delay)),
-      holdMs: randomInt(45, 85),
+      holdMs: randomInt(45, 85, rng),
     });
     previous = ch;
   }
 
-  return { steps, typosInjected };
+  return { steps, typosInjected, seed: rng.seed() };
 }
 
 /** Alias kept for callers that use the specification's original name. */
@@ -325,14 +499,14 @@ export const planKeystrokes = planTyping;
  * Momentum wheel ticks: exponentially decaying deltas summing exactly to
  * `distancePx` (signed), plus reading pauses every 600-900px.
  */
-export function planScroll(distancePx: number): ScrollPlan {
+export function planScroll(distancePx: number, rng: Rng = defaultRng): ScrollPlan {
   const tickCount = clamp(Math.round(Math.abs(distancePx) / 100), 3, 40);
   const lambda = 0.88;
 
   const weights: number[] = [];
   let weightSum = 0;
-  for (let i = 0; i < tickCount; i += 1) {
-    const weight = lambda ** i;
+  for (let index = 0; index < tickCount; index += 1) {
+    const weight = lambda ** index;
     weights.push(weight);
     weightSum += weight;
   }
@@ -340,29 +514,29 @@ export function planScroll(distancePx: number): ScrollPlan {
   const ticks: ScrollTick[] = [];
   let assigned = 0;
   let sincePause = 0;
-  let nextPauseAt = randomInt(600, 900);
+  let nextPauseAt = randomInt(600, 900, rng);
   let totalPauseMs = 0;
 
-  for (let i = 0; i < tickCount; i += 1) {
-    const isLast = i === tickCount - 1;
+  for (let index = 0; index < tickCount; index += 1) {
+    const isLast = index === tickCount - 1;
     const delta = isLast
       ? distancePx - assigned
-      : Math.round((distancePx * weights[i]!) / weightSum);
+      : Math.round((distancePx * weights[index]!) / weightSum);
     assigned += delta;
 
     let pauseMs = 0;
     sincePause += Math.abs(delta);
     if (sincePause >= nextPauseAt) {
-      pauseMs = randomInt(1200, 3500);
+      pauseMs = randomInt(1200, 3500, rng);
       totalPauseMs += pauseMs;
       sincePause = 0;
-      nextPauseAt = randomInt(600, 900);
+      nextPauseAt = randomInt(600, 900, rng);
     }
 
-    ticks.push({ delta, delayMs: randomInt(16, 32), pauseMs });
+    ticks.push({ delta, delayMs: randomInt(16, 32, rng), pauseMs });
   }
 
-  return { ticks, totalPauseMs };
+  return { ticks, totalPauseMs, seed: rng.seed() };
 }
 
 /** CDP modifier bitmask. Unknown names are ignored. */

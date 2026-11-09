@@ -29,6 +29,7 @@ import { RpcFault, errorText } from "./faults.js";
 import { classifyReadBack, type Verification } from "./verify.js";
 import {
   clickLanding,
+  createRng,
   keyDefinition,
   modifiersMask,
   planMousePath,
@@ -36,7 +37,7 @@ import {
   planTyping,
   randomInt,
 } from "./humanizer.js";
-import type { ClickRect, KeyDefinition, Point2D } from "./humanizer.js";
+import type { ClickRect, KeyDefinition, Point2D, Rng } from "./humanizer.js";
 
 export { RpcFault } from "./faults.js";
 
@@ -47,17 +48,20 @@ export type ContentSender = (
 
 export interface ClickOptions {
   doubleClick?: boolean;
+  seed?: string;
   sendContent: ContentSender;
 }
 
 export interface ClickAtOptions {
   doubleClick?: boolean;
+  seed?: string;
   sendContent: ContentSender;
 }
 
 export interface TypeOptions {
   enter?: boolean;
   typoRate?: number;
+  seed?: string;
   sendContent: ContentSender;
 }
 
@@ -65,6 +69,7 @@ export interface ScrollOptions {
   direction?: "down" | "up";
   amount?: number;
   toSelector?: string;
+  seed?: string;
   sendContent: ContentSender;
 }
 
@@ -300,10 +305,15 @@ function keyEventParams(
   return params;
 }
 
-async function pressKey(tabId: number, definition: KeyDefinition, modifiers: number): Promise<void> {
+async function pressKey(
+  tabId: number,
+  definition: KeyDefinition,
+  modifiers: number,
+  rng: Rng,
+): Promise<void> {
   const type = definition.text !== undefined ? "keyDown" : "rawKeyDown";
   await debuggerController.send(tabId, "Input.dispatchKeyEvent", keyEventParams(definition, type, modifiers));
-  await sleep(randomInt(45, 85));
+  await sleep(randomInt(45, 85, rng));
   await debuggerController.send(tabId, "Input.dispatchKeyEvent", keyEventParams(definition, "keyUp", modifiers));
 }
 
@@ -330,6 +340,7 @@ export async function click(
 ): Promise<ActionClickResult> {
   return run(async () => {
     const startedAt = Date.now();
+    const rng = createRng(options.seed);
     const target = await requestTarget(options.sendContent, tabId, query);
     const targetId = target.id ?? (typeof query === "number" ? query : 0);
     requireInteractable(target, targetId);
@@ -340,7 +351,7 @@ export async function click(
       width: target.w,
       height: target.h,
     };
-    const landing = clickLanding(rect);
+    const landing = clickLanding(rect, rng);
 
     let start: Point2D | undefined = lastPointer.get(tabId);
     if (!start) {
@@ -350,32 +361,29 @@ export async function click(
     const x = Math.round(landing.x);
     const y = Math.round(landing.y);
 
-    // Human ballistic movement (fast, smooth, natural)
-    const dist = Math.hypot(x - start.x, y - start.y);
-    if (dist > 150) {
-      const midX = Math.round((start.x + x) / 2);
-      const midY = Math.round((start.y + y) / 2);
-      await debuggerController.send(
-        tabId,
-        "Input.dispatchMouseEvent",
-        mouseEventParams("mouseMoved", midX, midY),
-      );
-      await sleep(10);
+    // Minimum-jerk ballistic movement with OU tremor and a far-target overshoot.
+    const path = planMousePath(start, { x, y }, Math.max(rect.width, 1), rng);
+    if (Math.hypot(x - start.x, y - start.y) >= 1) {
+      for (const point of path.points) {
+        await debuggerController.send(
+          tabId,
+          "Input.dispatchMouseEvent",
+          mouseEventParams("mouseMoved", point.x, point.y),
+        );
+        if (point.delayMs > 0) {
+          await sleep(point.delayMs);
+        }
+      }
     }
 
-    await debuggerController.send(
-      tabId,
-      "Input.dispatchMouseEvent",
-      mouseEventParams("mouseMoved", x, y),
-    );
-    await sleep(randomInt(10, 20));
+    await sleep(randomInt(10, 20, rng));
 
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
       mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 1 }),
     );
-    await sleep(randomInt(20, 35));
+    await sleep(randomInt(20, 35, rng));
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
@@ -383,13 +391,13 @@ export async function click(
     );
 
     if (options.doubleClick === true) {
-      await sleep(randomInt(40, 70));
+      await sleep(randomInt(40, 70, rng));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
         mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 2 }),
       );
-      await sleep(randomInt(20, 35));
+      await sleep(randomInt(20, 35, rng));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
@@ -422,6 +430,7 @@ export async function click(
       target: { id: targetId, tag: target.tag, label: target.label },
       coordinates: { x, y },
       consequence,
+      seed: rng.seed(),
       durationMs: Date.now() - startedAt,
     };
   });
@@ -436,19 +445,20 @@ export async function clickAt(
 ): Promise<ActionClickResult> {
   return run(async () => {
     const startedAt = Date.now();
+    const rng = createRng(options.seed);
 
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
       mouseEventParams("mouseMoved", x, y),
     );
-    await sleep(randomInt(10, 20));
+    await sleep(randomInt(10, 20, rng));
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
       mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 1 }),
     );
-    await sleep(randomInt(20, 35));
+    await sleep(randomInt(20, 35, rng));
     await debuggerController.send(
       tabId,
       "Input.dispatchMouseEvent",
@@ -456,13 +466,13 @@ export async function clickAt(
     );
 
     if (options.doubleClick === true) {
-      await sleep(randomInt(40, 70));
+      await sleep(randomInt(40, 70, rng));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
         mouseEventParams("mousePressed", x, y, { button: "left", clickCount: 2 }),
       );
-      await sleep(randomInt(20, 35));
+      await sleep(randomInt(20, 35, rng));
       await debuggerController.send(
         tabId,
         "Input.dispatchMouseEvent",
@@ -492,6 +502,7 @@ export async function clickAt(
       action: "click",
       coordinates: { x, y },
       consequence,
+      seed: rng.seed(),
       durationMs: Date.now() - startedAt,
     };
   });
@@ -505,6 +516,7 @@ export async function typeText(
 ): Promise<ActionTypeResult> {
   return run(async () => {
     const startedAt = Date.now();
+    const rng = createRng(options.seed);
 
     if (typeof text !== "string") {
       throw new RpcFault(ErrorCodes.internal, "text is required");
@@ -540,15 +552,19 @@ export async function typeText(
       throw new RpcFault(ErrorCodes.elementNotFound, focusResponse.error);
     }
 
-    const plan = planTyping(text, typoRate);
+    const plan = planTyping(text, typoRate, rng);
 
     for (const step of plan.steps) {
-      if (step.kind === "char") {
+      if (step.kind === "insert") {
+        // Graphemes with no CDP key code (accents, CJK, emoji) arrive as trusted IME text.
+        await debuggerController.send(tabId, "Input.insertText", {
+          text: step.value,
+        });
+      } else if (step.kind === "char") {
         let definition: KeyDefinition;
         try {
           definition = keyDefinition(step.value);
         } catch {
-          // Non-QWERTY characters (accents, CJK, emoji) arrive as trusted IME text.
           await debuggerController.send(tabId, "Input.insertText", {
             text: step.value,
           });
@@ -588,7 +604,7 @@ export async function typeText(
     const readBack = await verifyTypedText(options.sendContent, tabId, id, text);
 
     if (options.enter === true) {
-      await pressKey(tabId, keyDefinition("Enter"), 0);
+      await pressKey(tabId, keyDefinition("Enter"), 0, rng);
     }
 
     const after = await requestState(options.sendContent, tabId);
@@ -602,6 +618,7 @@ export async function typeText(
       verified: readBack.verified,
       verification: readBack.verification,
       readBack: readBack.readBack,
+      seed: rng.seed(),
     };
   });
 }
@@ -610,12 +627,14 @@ export async function press(
   tabId: number,
   key: string,
   modifiers: string[] = [],
+  seed?: string,
 ): Promise<ActionPressResult> {
   return run(async () => {
+    const rng = createRng(seed);
     const definition = keyDefinition(key);
     const modifierBits = modifiersMask(modifiers) | (definition.shift === true ? 8 : 0);
-    await pressKey(tabId, definition, modifierBits);
-    return { success: true, key };
+    await pressKey(tabId, definition, modifierBits, rng);
+    return { success: true, key, seed: rng.seed() };
   });
 }
 
@@ -624,6 +643,7 @@ export async function scroll(
   options: ScrollOptions,
 ): Promise<ActionScrollResult> {
   return run(async () => {
+    const rng = createRng(options.seed);
     if (options.toSelector) {
       const escaped = JSON.stringify(options.toSelector);
       const evalResult = await debuggerController.send<EvaluateResult>(
@@ -670,6 +690,7 @@ export async function scroll(
         newScrollY: Math.round(metrics.scrollY),
         viewportPercent: metrics.percent,
         target: options.toSelector,
+        seed: rng.seed(),
       };
     }
 
@@ -704,7 +725,7 @@ export async function scroll(
     const distance =
       Math.round(amount * before.viewportHeight) *
       (options.direction === "up" ? -1 : 1);
-    const plan = planScroll(distance);
+    const plan = planScroll(distance, rng);
 
     for (const tick of plan.ticks) {
       await debuggerController.send(
@@ -757,6 +778,7 @@ export async function scroll(
           newScrollY: Math.round(val.scrollY ?? 0),
           viewportPercent: after.percent,
           frame: String(val.frameIndex),
+          seed: rng.seed(),
         };
       }
     }
@@ -765,6 +787,7 @@ export async function scroll(
       scrolledPixels: scrolledPx,
       newScrollY: Math.round(after.scrollY),
       viewportPercent: after.percent,
+      seed: rng.seed(),
     };
   });
 }

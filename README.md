@@ -248,7 +248,7 @@ If `captureVisibleTab` cannot capture the tab (the window is minimized, or Chrom
 ./bin/chrome-ctl bulk - --out ./pages --resume < urls.txt
 ```
 
-Each item is opened in the automation tab, given a jittered wait, checked with `wait --network` (falling back to DOM idle), read as markdown, and written to `NNN-slug.md`. Every attempt appends `{index, url, title, bytes, file, waitedMs, ok, error}` to `manifest.jsonl`. `--resume` skips successful URLs, `--stop-on-empty` stops on pages shorter than `--min-bytes` (default 300), and three consecutive identical pages stop the run. stdout carries only the summary and failures; page bodies stay in files.
+Each item is opened in the automation tab, given a jittered wait, checked with `wait --network` (falling back to DOM idle), read as markdown, and written atomically to `NNN-slug.md`. Transient failures are retried with full-jitter backoff, per-host pacing halves after a failure, and a host that keeps failing is paused by a circuit breaker. Every attempt appends `{index, url, title, bytes, file, waitedMs, ok, error, hash, simHash}` to `manifest.jsonl`. `--resume` skips successful URLs, `--stop-on-empty` stops on pages shorter than `--min-bytes` (default 300), and three consecutive near-duplicate pages (SimHash, not just an exact match) stop the run. stdout carries only the summary and failures; page bodies stay in files.
 
 ### Auth and macros
 

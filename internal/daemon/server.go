@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rajeshshrirao/chrome-ctl/internal/macro"
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
 )
 
@@ -63,8 +64,12 @@ type daemon struct {
 	rec     recorder
 	macro   macroRecorder
 
+	macroBreakers *macro.Breakers
+
 	lastShotMu   sync.Mutex
 	lastShotHash string
+
+	sched *scheduler
 
 	httpSrv *http.Server
 }
@@ -77,6 +82,9 @@ func newDaemon(cfg Config) *daemon {
 		log:      cfg.Log,
 		upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 		pending:  make(map[string]chan protocol.Response),
+		sched:    newScheduler(),
+
+		macroBreakers: macro.NewBreakers(3, 30*time.Second, nil),
 	}
 }
 
@@ -256,6 +264,8 @@ func (d *daemon) handleWS(w http.ResponseWriter, r *http.Request) {
 func (d *daemon) sendReady(ext *extensionConn) error {
 	params, err := json.Marshal(protocol.SystemReadyParams{
 		Version:         d.cfg.Version,
+		ProtocolVersion: protocol.ProtocolVersion,
+		Capabilities:    protocol.Capabilities,
 		DaemonUptimeSec: d.uptimeSec(),
 		AttachedTabs:    []int{},
 	})
