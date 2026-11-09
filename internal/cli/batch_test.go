@@ -34,3 +34,4 @@ func TestBatchCommandUnknownSubcommand(t *testing.T) {
 		t.Fatalf("expected unknown command error, got: %v", err)
 	}
 }
+
