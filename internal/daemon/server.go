@@ -58,11 +58,13 @@ type daemon struct {
 	upgrader websocket.Upgrader
 	nextID   atomic.Uint64
 
-	mu      sync.Mutex
-	conn    *extensionConn
-	pending map[string]chan protocol.Response
-	rec     recorder
-	macro   macroRecorder
+	mu       sync.Mutex
+	conn     *extensionConn
+	pending  map[string]chan protocol.Response
+	paused   bool
+	resumeCh chan struct{}
+	rec      recorder
+	macro    macroRecorder
 
 	macroBreakers *macro.Breakers
 
@@ -147,6 +149,7 @@ func (d *daemon) serve(ctx context.Context, ln net.Listener) error {
 
 func (d *daemon) shutdown() {
 	d.log.Printf("daemon: shutting down")
+	d.setPaused(false)
 	d.closeLocal()
 	d.closeExtension(websocket.CloseGoingAway, "daemon shutting down")
 	if d.httpSrv != nil {

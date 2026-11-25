@@ -11,6 +11,7 @@
 - `macro.saga`
 - `humanizer.seed`
 - `protocol.codegen`
+- `session.pause`
 
 ## Methods
 
@@ -19,6 +20,8 @@
 | `system.ready` | `MethodSystemReady` | `systemReady` | 10000 ms |
 | `system.ping` | `MethodSystemPing` | `systemPing` | 10000 ms |
 | `session.status` | `MethodSessionStatus` | `sessionStatus` | 10000 ms |
+| `session.pause` | `MethodSessionPause` | `sessionPause` | 10000 ms |
+| `session.resume` | `MethodSessionResume` | `sessionResume` | 10000 ms |
 | `window.list` | `MethodWindowList` | `windowList` | 10000 ms |
 | `window.create` | `MethodWindowCreate` | `windowCreate` | 30000 ms |
 | `window.ensure` | `MethodWindowEnsure` | `windowEnsure` | 30000 ms |

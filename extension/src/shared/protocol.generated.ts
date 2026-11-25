@@ -8,12 +8,15 @@ export const CAPABILITIES = [
   "macro.saga",
   "humanizer.seed",
   "protocol.codegen",
+  "session.pause",
 ] as const;
 
 export const Methods = {
   systemReady: "system.ready",
   systemPing: "system.ping",
   sessionStatus: "session.status",
+  sessionPause: "session.pause",
+  sessionResume: "session.resume",
   windowList: "window.list",
   windowCreate: "window.create",
   windowEnsure: "window.ensure",

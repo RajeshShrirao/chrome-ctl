@@ -133,6 +133,15 @@ export interface ContentConsequenceRequest {
   beforeDisabled?: boolean;
 }
 
+export type OverlayState = "off" | "idle" | "running" | "paused";
+
+/** Toggle the subtle automation-window border glow in a closed Shadow DOM. */
+export interface ContentOverlayRequest {
+  channel: typeof CONTENT_CHANNEL;
+  type: "overlay";
+  state: OverlayState;
+}
+
 export type ContentRequest =
   | ContentPingRequest
   | ContentSnapRequest
@@ -148,7 +157,8 @@ export type ContentRequest =
   | ContentDescribeRequest
   | ContentResolveRequest
   | ContentFormStateRequest
-  | ContentConsequenceRequest;
+  | ContentConsequenceRequest
+  | ContentOverlayRequest;
 
 export interface SnapPayload {
   docId: string;
@@ -259,6 +269,7 @@ export type ContentResponse =
   | { ok: true; type: "resolve"; resolved: PageResolveResult }
   | { ok: true; type: "formstate"; controls: FormControlState[] }
   | { ok: true; type: "consequence"; consequence?: string }
+  | { ok: true; type: "overlay" }
   | { ok: false; error: string };
 
 export const READ_MAX_CHARS = 100_000;

@@ -5,12 +5,15 @@
     "scheduler.singleflight",
     "macro.saga",
     "humanizer.seed",
-    "protocol.codegen"
+    "protocol.codegen",
+    "session.pause"
   ],
   "methods": [
     { "name": "system.ready", "go": "MethodSystemReady", "ts": "systemReady" },
     { "name": "system.ping", "go": "MethodSystemPing", "ts": "systemPing" },
     { "name": "session.status", "go": "MethodSessionStatus", "ts": "sessionStatus" },
+    { "name": "session.pause", "go": "MethodSessionPause", "ts": "sessionPause", "daemonLocal": true },
+    { "name": "session.resume", "go": "MethodSessionResume", "ts": "sessionResume", "daemonLocal": true },
     { "name": "window.list", "go": "MethodWindowList", "ts": "windowList" },
     { "name": "window.create", "go": "MethodWindowCreate", "ts": "windowCreate" },
     { "name": "window.ensure", "go": "MethodWindowEnsure", "ts": "windowEnsure" },

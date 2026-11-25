@@ -9,6 +9,7 @@ const REQUIRED_PERMISSIONS = [
   "debugger",
   "offscreen",
   "scripting",
+  "sidePanel",
   "storage",
   "tabs",
 ];
@@ -66,6 +67,12 @@ const popup = manifest.action?.default_popup;
 check(
   typeof popup === "string" && (await fileExists(path.join(dist, popup))),
   `action.default_popup must reference an existing dist file (got ${String(popup)})`,
+);
+
+const sidePanel = manifest.side_panel?.default_path;
+check(
+  typeof sidePanel === "string" && (await fileExists(path.join(dist, sidePanel))),
+  `side_panel.default_path must reference an existing dist file (got ${String(sidePanel)})`,
 );
 
 const ICON_SIZES = ["16", "32", "48", "128"];

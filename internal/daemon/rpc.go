@@ -67,11 +67,58 @@ func (d *daemon) handleRPC(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (d *daemon) isPaused() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.paused
+}
+
+func (d *daemon) setPaused(paused bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if paused == d.paused {
+		return
+	}
+	d.paused = paused
+	if paused {
+		d.resumeCh = make(chan struct{})
+		d.log.Printf("daemon: paused")
+	} else {
+		if d.resumeCh != nil {
+			close(d.resumeCh)
+			d.resumeCh = nil
+		}
+		d.log.Printf("daemon: resumed")
+	}
+}
+
+func (d *daemon) waitIfPaused(ctx context.Context) *protocol.RPCError {
+	for {
+		d.mu.Lock()
+		if !d.paused {
+			d.mu.Unlock()
+			return nil
+		}
+		ch := d.resumeCh
+		d.mu.Unlock()
+
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return &protocol.RPCError{
+				Code:    protocol.ErrBusy,
+				Message: "daemon is paused and request was cancelled",
+			}
+		}
+	}
+}
+
 func (d *daemon) handleSessionStatus(ctx context.Context, req protocol.Request) protocol.Response {
 	if d.extension() == nil {
 		return protocol.Success(req.ID, protocol.SessionStatus{
 			Status:             "ok",
 			ExtensionConnected: false,
+			Paused:             d.isPaused(),
 			Version:            d.cfg.Version,
 			ProtocolVersion:    protocol.ProtocolVersion,
 			Capabilities:       protocol.Capabilities,
@@ -93,6 +140,7 @@ func (d *daemon) handleSessionStatus(ctx context.Context, req protocol.Request) 
 	return protocol.Success(req.ID, protocol.SessionStatus{
 		Status:             "ok",
 		ExtensionConnected: true,
+		Paused:             d.isPaused(),
 		Version:            d.cfg.Version,
 		ProtocolVersion:    protocol.ProtocolVersion,
 		Capabilities:       protocol.Capabilities,
@@ -126,6 +174,11 @@ func (d *daemon) logForwardFailure(method string, rpcErr *protocol.RPCError) {
 }
 
 func (d *daemon) forward(ctx context.Context, req protocol.Request) (json.RawMessage, *protocol.RPCError) {
+	if req.Method != protocol.MethodSessionStatus {
+		if rpcErr := d.waitIfPaused(ctx); rpcErr != nil {
+			return nil, rpcErr
+		}
+	}
 	plan := scheduleFor(req.Method, req.Params)
 	release, rpcErr := d.sched.acquire(ctx, plan.key, plan.write)
 	if rpcErr != nil {

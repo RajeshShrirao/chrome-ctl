@@ -22,6 +22,7 @@ const BACKOFF_FACTOR = 1.5;
 const JITTER_RATIO = 0.2;
 const PAIR_POLL_MS = 5_000;
 const PAIR_TIMEOUT_MS = 3_000;
+const DAEMON_RPC_URL = DAEMON_PAIR_URL.replace(/\/pair$/, "/rpc");
 
 interface PendingCall {
   ws: WebSocket;
@@ -100,6 +101,7 @@ function applyToken(next: string | undefined): void {
     closeSocket();
     state = "unconfigured";
     lastError = undefined;
+    notifySwState();
     schedulePairing(0);
     return;
   }
@@ -317,6 +319,55 @@ async function reconnectAfterFailure(): Promise<void> {
   connect();
 }
 
+function notifySwState(): void {
+  const message: RuntimeMessage = {
+    target: "sw",
+    type: "conn.state",
+    state: currentState(),
+    ...(lastError ? { lastError } : {}),
+  };
+  try {
+    chrome.runtime.sendMessage(message, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch {
+    // Service worker may be waking up.
+  }
+}
+
+async function callDaemonControl(
+  method: "session.pause" | "session.resume",
+): Promise<{ ok: boolean; paused?: boolean; error?: string }> {
+  if (!token) {
+    return { ok: false, error: "daemon not paired" };
+  }
+  try {
+    const res = await fetch(DAEMON_RPC_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: `ui-${Date.now()}`, method }),
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}` };
+    }
+    const body = (await res.json()) as {
+      result?: { paused?: boolean };
+      error?: { message?: string };
+    };
+    if (body.error) {
+      return { ok: false, error: body.error.message ?? "rpc error" };
+    }
+    return { ok: true, paused: body.result?.paused === true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "request failed" };
+  }
+}
+
 function handleOpen(ws: WebSocket): void {
   if (socket !== ws) {
     return;
@@ -324,6 +375,7 @@ function handleOpen(ws: WebSocket): void {
   state = "connected";
   lastError = undefined;
   reconnectAttempt = 0;
+  notifySwState();
   startHeartbeat(ws);
   resetWatchdog(ws);
 }
@@ -342,6 +394,7 @@ function handleClose(ws: WebSocket): void {
 
   if (token === undefined) {
     state = "unconfigured";
+    notifySwState();
     schedulePairing(0);
     return;
   }
@@ -349,6 +402,7 @@ function handleClose(ws: WebSocket): void {
   if (lastError === undefined) {
     lastError = "daemon connection closed";
   }
+  notifySwState();
   scheduleReconnect();
 }
 
@@ -471,6 +525,7 @@ function connect(): void {
   daemonCapabilities = [];
   lastError = undefined;
   state = "connecting";
+  notifySwState();
 
   let ws: WebSocket;
   try {
@@ -589,6 +644,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       void reloadTokenAndConnect().catch(() => {});
       sendResponse({ ok: true });
       return false;
+    case "daemon.control":
+      void callDaemonControl(message.method).then(sendResponse);
+      return true;
     default:
       return false;
   }

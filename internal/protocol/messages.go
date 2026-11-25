@@ -47,6 +47,7 @@ type ExtensionStatus struct {
 type SessionStatus struct {
 	Status             string     `json:"status"`
 	ExtensionConnected bool       `json:"extensionConnected"`
+	Paused             bool       `json:"paused,omitempty"`
 	Version            string     `json:"version"`
 	ProtocolVersion    string     `json:"protocolVersion,omitempty"`
 	Capabilities       []string   `json:"capabilities,omitempty"`
@@ -56,6 +57,10 @@ type SessionStatus struct {
 	ActiveTab          *ActiveTab `json:"activeTab"`
 	TabCount           int        `json:"tabCount"`
 	DebuggerAttached   bool       `json:"debuggerAttached"`
+}
+
+type SessionPauseResult struct {
+	Paused bool `json:"paused"`
 }
 
 type SystemReadyParams struct {

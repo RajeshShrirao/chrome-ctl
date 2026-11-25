@@ -10,12 +10,16 @@
     "debugger",
     "scripting",
     "storage",
-    "offscreen"
+    "offscreen",
+    "sidePanel"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/service_worker.js",
     "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
   },
   "icons": {
     "16": "icons/icon16.png",

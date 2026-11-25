@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>chrome-ctl Activity</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="status-row">
+        <span id="dot" class="dot unconfigured"></span>
+        <span id="status-text" class="status-text">Connecting</span>
+        <span id="meta" class="meta"></span>
+      </div>
+      <div class="controls">
+        <button id="pause-btn" class="primary" type="button">Pause</button>
+        <button id="focus-btn" type="button" title="Focus automation window">Auto Win</button>
+        <button id="detach-btn" type="button" title="Detach debugger from tabs">Detach</button>
+        <button id="clear-btn" type="button" title="Clear feed">Clear</button>
+      </div>
+      <p id="banner" class="banner" hidden></p>
+    </header>
+
+    <main id="feed" class="feed" aria-live="polite">
+      <p id="empty" class="empty">Waiting for agent commands…</p>
+    </main>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

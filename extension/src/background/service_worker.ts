@@ -5,6 +5,7 @@ import type {
   ContentRequest,
   ContentResponse,
   ContentSnapRequest,
+  OverlayState,
 } from "../shared/content.js";
 import { CAPABILITIES, ErrorCodes, Methods, PROTOCOL_VERSION, TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
 import type {
@@ -53,6 +54,7 @@ import { handlePageDescribe, handlePageResolve } from "./resolver.js";
 import type { ResolverDeps } from "./resolver.js";
 import { formatSnapDiff, formatSnapHeaderUrl } from "./snap_format.js";
 import { sso } from "./sso.js";
+import { UiStateController } from "./ui_state.js";
 
 export { formatSnapDiff, formatSnapHeaderUrl } from "./snap_format.js";
 import {
@@ -245,6 +247,57 @@ interface SnapIdentity {
 
 const lastSnap = new Map<number, SnapIdentity>();
 
+const uiState = new UiStateController();
+let lastOverlayTabId: number | undefined;
+
+function sendOverlayBestEffort(tabId: number, state: OverlayState): void {
+  if (typeof chrome === "undefined" || !chrome.tabs?.sendMessage) {
+    return;
+  }
+  try {
+    chrome.tabs.sendMessage(
+      tabId,
+      { channel: CONTENT_CHANNEL, type: "overlay", state } satisfies ContentRequest,
+      { frameId: 0 },
+      () => {
+        void chrome.runtime.lastError;
+      },
+    );
+  } catch {
+    // Tab may be restricted or already closed.
+  }
+}
+
+function desiredOverlayState(): OverlayState {
+  if (uiState.isPaused()) {
+    return "paused";
+  }
+  if (uiState.isRunning()) {
+    return "running";
+  }
+  return "idle";
+}
+
+async function syncOverlay(): Promise<void> {
+  if (typeof chrome === "undefined" || !chrome.windows?.get) {
+    return;
+  }
+  const autoWinId = await liveAutomationWindowId();
+  uiState.setAutomationWindowId(autoWinId);
+  const tab = autoWinId !== undefined ? await activeTabIn(autoWinId) : undefined;
+  const currentTabId = typeof tab?.id === "number" ? tab.id : undefined;
+
+  if (lastOverlayTabId !== undefined && lastOverlayTabId !== currentTabId) {
+    sendOverlayBestEffort(lastOverlayTabId, "off");
+  }
+  if (currentTabId === undefined) {
+    lastOverlayTabId = undefined;
+    return;
+  }
+  lastOverlayTabId = currentTabId;
+  sendOverlayBestEffort(currentTabId, desiredOverlayState());
+}
+
 if (typeof chrome !== "undefined" && chrome.tabs?.onUpdated) {
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === "loading" || changeInfo.url !== undefined) {
@@ -253,6 +306,15 @@ if (typeof chrome !== "undefined" && chrome.tabs?.onUpdated) {
       // here would let a renumbered id silently resolve against a new element.
       noteNavigation(tabId);
     }
+    if (changeInfo.status === "complete") {
+      void syncOverlay();
+    }
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.tabs?.onActivated) {
+  chrome.tabs.onActivated.addListener(() => {
+    void syncOverlay();
   });
 }
 
@@ -260,6 +322,9 @@ if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved) {
   chrome.tabs.onRemoved.addListener((tabId) => {
     lastSnap.delete(tabId);
     forgetTab(tabId);
+    if (lastOverlayTabId === tabId) {
+      lastOverlayTabId = undefined;
+    }
   });
 }
 
@@ -1405,6 +1470,14 @@ async function handleMediaCapture(
   let capturePath: "captureVisibleTab" | "cdp" = "captureVisibleTab";
   const isFull = params.full === true;
 
+  // Hide the automation border glow during capture so screenshots stay pixel-clean.
+  try {
+    await sendToContent(tabId, { channel: CONTENT_CHANNEL, type: "overlay", state: "off" }, 1_000);
+  } catch {
+    // Best effort.
+  }
+
+  try {
   if (isFull) {
     try {
       const shot = await debuggerController.send<{ data?: string }>(
@@ -1494,6 +1567,9 @@ async function handleMediaCapture(
     result.elements = elements;
   }
   return result;
+  } finally {
+    void syncOverlay();
+  }
 }
 
 const EVAL_DEFAULT_TIMEOUT_MS = 5_000;
@@ -1606,17 +1682,9 @@ function evalExceptionText(response: CdpEvalResponse): string {
   sendToContent: sendWithIdentity,
 };
 
-async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
-  const id = request.id ?? null;
-
-  // Notifications (no id) have no response channel; never execute side effects.
-  if (typeof request.id !== "string" || request.id === "") {
-    return { jsonrpc: "2.0", id: null };
-  }
-
-  const params = asParams(request.params);
+async function dispatchRpc(id: string, method: string, params: Record<string, unknown>): Promise<RpcResponse> {
   try {
-    switch (request.method) {
+    switch (method) {
       case Methods.sessionStatus:
         return { jsonrpc: "2.0", id, result: await buildStatus() };
       case Methods.windowList:
@@ -1686,6 +1754,33 @@ async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
   }
 }
 
+async function handleRpc(request: RpcRequest): Promise<RpcResponse> {
+  // Notifications (no id) have no response channel; never execute side effects.
+  if (typeof request.id !== "string" || request.id === "") {
+    return { jsonrpc: "2.0", id: null };
+  }
+  const id: string = request.id;
+
+  const params = asParams(request.params);
+  const track = request.method !== Methods.sessionStatus;
+  const startedAt = Date.now();
+  if (track) {
+    await uiState.hydrate();
+    const tabId = typeof params.tabId === "number" ? params.tabId : undefined;
+    uiState.recordStart(id, request.method, params, tabId);
+    void syncOverlay();
+  }
+
+  const resp = await dispatchRpc(id, request.method, params);
+
+  if (track) {
+    uiState.recordFinish(id, resp.error === undefined, Date.now() - startedAt, resp.error?.message);
+    uiState.setDebuggerAttached(debuggerController.attachedTabs().length > 0);
+    void syncOverlay();
+  }
+  return resp;
+}
+
 function isRuntimeMessage(value: unknown): value is RuntimeMessage {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -1728,6 +1823,88 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
 
     if (message.type === "rpc") {
       void handleRpc(message.request).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "conn.state") {
+      uiState.setConnState(message.state, message.lastError);
+      void syncOverlay();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message.type === "ui.getState") {
+      void (async () => {
+        await uiState.hydrate();
+        const autoWin = await liveAutomationWindowId();
+        uiState.setAutomationWindowId(autoWin);
+        uiState.setDebuggerAttached(debuggerController.attachedTabs().length > 0);
+        sendResponse(uiState.snapshot());
+      })();
+      return true;
+    }
+
+    if (message.type === "ui.clearFeed") {
+      uiState.clearFeed();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message.type === "ui.clearError") {
+      uiState.clearError();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message.type === "ui.focusAutomation") {
+      void (async () => {
+        try {
+          let winId = await liveAutomationWindowId();
+          if (winId === undefined) {
+            const created = await handleWindowEnsure();
+            winId = created.windowId;
+          }
+          await chrome.windows.update(winId, { focused: true });
+          void syncOverlay();
+          sendResponse({ ok: true, windowId: winId });
+        } catch (error) {
+          sendResponse({ ok: false, error: describeError(error) });
+        }
+      })();
+      return true;
+    }
+
+    if (message.type === "ui.detachDebugger") {
+      void (async () => {
+        const tabs = debuggerController.attachedTabs();
+        for (const tabId of tabs) {
+          await debuggerController.detach(tabId);
+        }
+        uiState.setDebuggerAttached(false);
+        sendResponse({ ok: true, detached: tabs.length });
+      })();
+      return true;
+    }
+
+    if (message.type === "ui.setPaused") {
+      const method = message.paused ? "session.pause" : "session.resume";
+      const controlMsg: RuntimeMessage = { target: "offscreen", type: "daemon.control", method };
+      chrome.runtime.sendMessage(
+        controlMsg,
+        (reply: { ok?: boolean; paused?: boolean; error?: string } | undefined) => {
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError || !reply?.ok) {
+            sendResponse({
+              ok: false,
+              error: reply?.error ?? runtimeError?.message ?? "failed to reach daemon",
+            });
+            return;
+          }
+          uiState.setPaused(reply.paused === true);
+          void syncOverlay();
+          sendResponse({ ok: true, paused: reply.paused === true });
+        },
+      );
       return true;
     }
 

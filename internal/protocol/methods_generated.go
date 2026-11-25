@@ -12,6 +12,8 @@ const (
 	MethodSystemReady   = "system.ready"
 	MethodSystemPing    = "system.ping"
 	MethodSessionStatus = "session.status"
+	MethodSessionPause  = "session.pause"
+	MethodSessionResume = "session.resume"
 	MethodWindowList    = "window.list"
 	MethodWindowCreate  = "window.create"
 	MethodWindowEnsure  = "window.ensure"
@@ -85,6 +87,7 @@ var Capabilities = []string{
 	"macro.saga",
 	"humanizer.seed",
 	"protocol.codegen",
+	"session.pause",
 }
 
 var methodTimeouts = map[string]time.Duration{

@@ -27,6 +27,7 @@ const moduleOptions = {
     path.join(src, "background", "service_worker.ts"),
     path.join(src, "offscreen", "offscreen.ts"),
     path.join(src, "popup", "popup.ts"),
+    path.join(src, "sidepanel", "sidepanel.ts"),
   ],
   format: "esm",
 };
@@ -44,11 +45,14 @@ const staticFiles = [
   [path.join(src, "offscreen", "offscreen.html"), path.join(dist, "offscreen", "offscreen.html")],
   [path.join(src, "popup", "popup.html"), path.join(dist, "popup", "popup.html")],
   [path.join(src, "popup", "popup.css"), path.join(dist, "popup", "popup.css")],
+  [path.join(src, "sidepanel", "sidepanel.html"), path.join(dist, "sidepanel", "sidepanel.html")],
+  [path.join(src, "sidepanel", "sidepanel.css"), path.join(dist, "sidepanel", "sidepanel.css")],
 ];
 
 async function copyStatic() {
   await mkdir(path.join(dist, "offscreen"), { recursive: true });
   await mkdir(path.join(dist, "popup"), { recursive: true });
+  await mkdir(path.join(dist, "sidepanel"), { recursive: true });
   await Promise.all(staticFiles.map(([from, to]) => copyFile(from, to)));
   await cp(path.join(root, "icons"), path.join(dist, "icons"), { recursive: true });
 }

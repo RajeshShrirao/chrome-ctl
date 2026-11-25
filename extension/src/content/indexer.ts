@@ -25,6 +25,7 @@ import {
   resolveReadElement,
   truncateMarkdown,
 } from "./read.ts";
+import { setAutomationOverlay } from "./overlay.ts";
 
 interface IndexerGlobal {
   /** Live snapshot map; ids are unique for the life of this document. */
@@ -110,6 +111,7 @@ const REQUEST_TYPES = new Set([
   "resolve",
   "formstate",
   "consequence",
+  "overlay",
 ]);
 
 function isContentRequest(value: unknown): value is ContentRequest {
@@ -383,6 +385,9 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
         consequence: consequence || undefined,
       };
     }
+    case "overlay":
+      setAutomationOverlay(request.state);
+      return { ok: true, type: "overlay" };
     default:
       return { ok: false, error: `unsupported request type` };
   }

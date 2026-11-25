@@ -52,6 +52,12 @@ func (d *daemon) recorderState() *recorder {
 // macro playback) instead of forwarding to the extension.
 func (d *daemon) handleLocalRPC(ctx context.Context, req protocol.Request) (protocol.Response, bool) {
 	switch req.Method {
+	case protocol.MethodSessionPause:
+		d.setPaused(true)
+		return protocol.Success(req.ID, protocol.SessionPauseResult{Paused: true}), true
+	case protocol.MethodSessionResume:
+		d.setPaused(false)
+		return protocol.Success(req.ID, protocol.SessionPauseResult{Paused: false}), true
 	case protocol.MethodMediaShot:
 		return d.handleMediaShot(ctx, req), true
 	case protocol.MethodMediaRecStart:
