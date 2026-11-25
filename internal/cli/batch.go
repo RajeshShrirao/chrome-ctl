@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
 	"github.com/spf13/cobra"
@@ -34,24 +36,28 @@ func runBatch(cmd *cobra.Command, steps []string, snapOnError bool) error {
 
 	for i, step := range steps {
 		stepNum := i + 1
-		fields := strings.Fields(strings.TrimSpace(step))
-		if len(fields) == 0 {
+		tokens, err := splitBatchArgs(step)
+		if err != nil {
+			return fmt.Errorf("batch step %d: %w", stepNum, err)
+		}
+		if len(tokens) == 0 {
 			continue
 		}
 
-		// Rebuild subcommand execution within root context
-		subCmd, subArgs, err := findSubCommand(fields)
+		// ExecuteContext always runs from the root command and falls back to
+		// os.Args[1:] when root.args is nil, so configure and execute root.
+		root, err := findSubCommand(tokens)
 		if err != nil {
 			return fmt.Errorf("batch step %d: %w", stepNum, err)
 		}
 
 		var stepOut bytes.Buffer
 		var stepErr bytes.Buffer
-		subCmd.SetOut(&stepOut)
-		subCmd.SetErr(&stepErr)
-		subCmd.SetArgs(subArgs)
+		root.SetOut(&stepOut)
+		root.SetErr(&stepErr)
+		root.SetArgs(tokens)
 
-		err = subCmd.ExecuteContext(cmd.Context())
+		err = root.ExecuteContext(cmd.Context())
 		if err != nil {
 			failMsg := fmt.Sprintf("BATCH STEP FAILED: step %d (%q): %v\n", stepNum, step, err)
 			if stepErr.Len() > 0 {
@@ -78,16 +84,92 @@ func runBatch(cmd *cobra.Command, steps []string, snapOnError bool) error {
 	return nil
 }
 
-func findSubCommand(tokens []string) (*cobra.Command, []string, error) {
+// findSubCommand resolves tokens against a fresh root command, rejects unknown
+// commands and nested batch invocations, and returns that root ready to execute.
+func findSubCommand(tokens []string) (*cobra.Command, error) {
 	root := NewRoot()
-	target, args, err := root.Find(tokens)
+	target, _, err := root.Find(tokens)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if target == nil || target == root {
-		return nil, nil, fmt.Errorf("unknown command %q", tokens[0])
+		return nil, fmt.Errorf("unknown command %q", tokens[0])
 	}
-	return target, args, nil
+	for c := target; c != nil; c = c.Parent() {
+		if c.Name() == "batch" {
+			return nil, errors.New("nested batch command is not allowed")
+		}
+	}
+	return root, nil
+}
+
+// splitBatchArgs splits a batch step string into CLI tokens, supporting single
+// quotes ('...'), double quotes ("..."), and backslash escapes.
+func splitBatchArgs(input string) ([]string, error) {
+	var args []string
+	var buf strings.Builder
+	inToken := false
+	var quote rune
+	escaped := false
+
+	for _, r := range input {
+		if escaped {
+			if quote == '"' && r != '"' && r != '\\' {
+				buf.WriteByte('\\')
+			}
+			buf.WriteRune(r)
+			escaped = false
+			inToken = true
+			continue
+		}
+
+		switch quote {
+		case '\'':
+			if r == '\'' {
+				quote = 0
+			} else {
+				buf.WriteRune(r)
+			}
+		case '"':
+			switch r {
+			case '"':
+				quote = 0
+			case '\\':
+				escaped = true
+			default:
+				buf.WriteRune(r)
+			}
+		default:
+			switch {
+			case unicode.IsSpace(r):
+				if inToken {
+					args = append(args, buf.String())
+					buf.Reset()
+					inToken = false
+				}
+			case r == '\'', r == '"':
+				quote = r
+				inToken = true
+			case r == '\\':
+				escaped = true
+				inToken = true
+			default:
+				buf.WriteRune(r)
+				inToken = true
+			}
+		}
+	}
+
+	if quote != 0 {
+		return nil, fmt.Errorf("unclosed %c quote", quote)
+	}
+	if escaped {
+		return nil, errors.New("unterminated backslash escape")
+	}
+	if inToken {
+		args = append(args, buf.String())
+	}
+	return args, nil
 }
 
 func takeFreshSnapshot(ctx context.Context) string {
