@@ -10,6 +10,7 @@ EXT_DIR := extension
 EXT_DIST := $(EXT_DIR)/dist
 NODE_MODULES := $(EXT_DIR)/node_modules
 SKILL := SKILL.md
+SKILL_REFS := references
 GO_TAGS := -tags nodynamic
 
 .PHONY: all build extension test e2e dist clean help
@@ -51,6 +52,7 @@ dist: extension
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build $(GO_TAGS) -trimpath -o $(DIST_DIR)/chrome-ctl-linux-amd64 ./cmd/chrome-ctl
 	cp -R $(EXT_DIST) $(DIST_DIR)/extension
 	cp $(SKILL) $(DIST_DIR)/SKILL.md
+	cp -R $(SKILL_REFS) $(DIST_DIR)/references
 
 ## clean: remove local CLI and release artifacts (keeps extension builds and deps)
 clean:
@@ -65,6 +67,6 @@ help:
 		'  extension  Install deps if needed, typecheck, and build extension/dist' \
 		'  test       Run Go tests and extension typecheck/build/tests' \
 		'  e2e        Build the CLI and run the end-to-end harness' \
-		'  dist       Cross-compile release binaries and stage extension + SKILL.md' \
+		'  dist       Cross-compile release binaries and stage extension + SKILL.md + references/' \
 		'  clean      Remove bin/ and dist/ (keeps extension/dist and node_modules)' \
 		'  help       Show this help'
