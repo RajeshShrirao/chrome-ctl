@@ -346,6 +346,119 @@ echo "$MACRO_MISSING"
 [[ "$RC" -eq 1 ]] || fail "macro run without vars exited $RC, want 1"
 grep -q 'missing variable' <<<"$MACRO_MISSING" || fail "macro run did not reject the missing variable"
 
+# Phase 6: turn-collapsing flags, diff, bounded read/formstate, and batch
+OPEN_WAIT_SNAP="$(./bin/chrome-ctl open "https://example.test/wait" --wait --snap 2>&1)" \
+  || fail "open --wait --snap failed"
+echo "$OPEN_WAIT_SNAP"
+grep -q '^OK: navigated \[1\] Opened Page - https://example\.test/wait$' <<<"$OPEN_WAIT_SNAP" \
+  || fail "open --wait --snap navigation line malformed"
+grep -q '^OK: wait settled after 42ms (2 requests)$' <<<"$OPEN_WAIT_SNAP" \
+  || fail "open --wait --snap wait line malformed"
+grep -q '^TAB \[1\] Opened Page | https://example\.test/wait$' <<<"$OPEN_WAIT_SNAP" \
+  || fail "open --wait --snap snapshot header missing"
+grep -q '^\[2\] <button> "Go" @40,60$' <<<"$OPEN_WAIT_SNAP" \
+  || fail "open --wait --snap snapshot element missing"
+
+SCROLL_SNAP="$(./bin/chrome-ctl scroll down --snap 2>&1)" || fail "scroll down --snap failed"
+echo "$SCROLL_SNAP"
+grep -q '^OK: scrolled down 720px to 720px (17%)$' <<<"$SCROLL_SNAP" \
+  || fail "scroll down --snap summary malformed"
+grep -q '^DIFF (+1 added, ~0 changed, -0 removed, 2 moved):$' <<<"$SCROLL_SNAP" \
+  || fail "scroll down --snap diff summary missing"
+grep -q '^+ \[3\] <button> "Confirm" @120,240$' <<<"$SCROLL_SNAP" \
+  || fail "scroll down --snap diff element missing"
+
+PRESS_SNAP="$(./bin/chrome-ctl press Enter --snap 2>&1)" || fail "press Enter --snap failed"
+echo "$PRESS_SNAP"
+grep -q '^OK: pressed Enter$' <<<"$PRESS_SNAP" \
+  || fail "press Enter --snap summary malformed"
+grep -q '^DIFF (+1 added, ~0 changed, -0 removed, 2 moved):$' <<<"$PRESS_SNAP" \
+  || fail "press Enter --snap diff summary missing"
+grep -q '^+ \[3\] <button> "Confirm" @120,240$' <<<"$PRESS_SNAP" \
+  || fail "press Enter --snap diff element missing"
+
+SNAP_DIFF="$(./bin/chrome-ctl snap --diff 2>&1)" || fail "snap --diff failed"
+echo "$SNAP_DIFF"
+grep -q '^TAB \[1\] Fake Tab | https://example\.test$' <<<"$SNAP_DIFF" \
+  || fail "snap --diff header missing"
+grep -q '^DIFF (+1 added, ~0 changed, -0 removed, 2 moved):$' <<<"$SNAP_DIFF" \
+  || fail "snap --diff summary missing"
+grep -q '^+ \[3\] <button> "Confirm" @120,240$' <<<"$SNAP_DIFF" \
+  || fail "snap --diff added element missing"
+
+READ_BOUNDED="$(./bin/chrome-ctl read --max-chars 20 2>&1)" || fail "read --max-chars 20 failed"
+echo "$READ_BOUNDED"
+grep -q '^# Fake Heading$' <<<"$READ_BOUNDED" || fail "read --max-chars 20 heading missing"
+grep -q '^Requ$' <<<"$READ_BOUNDED" || fail "read --max-chars 20 truncated body missing"
+if grep -q 'Requested: page' <<<"$READ_BOUNDED"; then
+  fail "read --max-chars 20 was not truncated"
+fi
+TRUNC_COUNT="$(grep -c '^\[truncated\]$' <<<"$READ_BOUNDED")"
+[[ "$TRUNC_COUNT" -eq 1 ]] || fail "read --max-chars 20 printed [truncated] $TRUNC_COUNT times, want 1"
+
+READ_FULL="$(./bin/chrome-ctl read --full 2>&1)" || fail "read --full failed"
+echo "$READ_FULL"
+grep -q '^# Fake Heading$' <<<"$READ_FULL" || fail "read --full heading missing"
+grep -q '^Requested: page$' <<<"$READ_FULL" || fail "read --full body missing"
+if grep -q '\[truncated\]' <<<"$READ_FULL"; then
+  fail "read --full unexpectedly included [truncated]"
+fi
+
+FORMSTATE_DEFAULT="$(./bin/chrome-ctl formstate 2>&1)" || fail "formstate failed"
+echo "$FORMSTATE_DEFAULT"
+grep -q 'name="notes"' <<<"$FORMSTATE_DEFAULT" || fail "formstate omitted filled text control"
+grep -q 'name="empty_notes"' <<<"$FORMSTATE_DEFAULT" || fail "formstate omitted empty text control"
+grep -q 'name="agree"' <<<"$FORMSTATE_DEFAULT" || fail "formstate omitted checked checkbox"
+grep -q 'name="newsletter"' <<<"$FORMSTATE_DEFAULT" || fail "formstate omitted unchecked checkbox"
+grep -q '…' <<<"$FORMSTATE_DEFAULT" || fail "formstate did not truncate long label"
+if grep -q 'TAIL_MARKER' <<<"$FORMSTATE_DEFAULT"; then
+  fail "formstate failed to bound long label"
+fi
+
+FORMSTATE_FILLED="$(./bin/chrome-ctl formstate --filled 2>&1)" || fail "formstate --filled failed"
+echo "$FORMSTATE_FILLED"
+grep -q 'name="notes"' <<<"$FORMSTATE_FILLED" || fail "formstate --filled omitted filled input"
+grep -q '\[x\] <input:checkbox> name="agree"' <<<"$FORMSTATE_FILLED" || fail "formstate --filled omitted checked box"
+if grep -q 'name="empty_notes"' <<<"$FORMSTATE_FILLED" || grep -q 'name="newsletter"' <<<"$FORMSTATE_FILLED"; then
+  fail "formstate --filled included empty/unchecked controls"
+fi
+
+FORMSTATE_FULL="$(./bin/chrome-ctl formstate --full 2>&1)" || fail "formstate --full failed"
+echo "$FORMSTATE_FULL"
+grep -q 'TAIL_MARKER' <<<"$FORMSTATE_FULL" || fail "formstate --full did not preserve full label"
+if grep -q '…' <<<"$FORMSTATE_FULL"; then
+  fail "formstate --full unexpectedly truncated output"
+fi
+
+BATCH_OK="$(./bin/chrome-ctl batch "open https://example.test/b" "snap" "click 2" 2>&1)" \
+  || fail "batch failed"
+echo "$BATCH_OK"
+grep -q '^\[1/3\] OK: navigated \[1\] Opened Page - https://example\.test/b$' <<<"$BATCH_OK" \
+  || fail "batch step 1 output malformed"
+grep -q '^\[2/3\] TAB \[1\] Fake Tab | https://example\.test$' <<<"$BATCH_OK" \
+  || fail "batch step 2 output malformed"
+grep -q '^\[3/3\] OK: clicked \[2\] <button> "Go" @40,60 (0\.34s)$' <<<"$BATCH_OK" \
+  || fail "batch step 3 output malformed"
+
+set +e
+./bin/chrome-ctl batch "click 2" "click 99" "type 1 'should not run'" >"$TMP/batch_fail.out" 2>"$TMP/batch_fail.err"
+RC=$?
+set -e
+cat "$TMP/batch_fail.out"
+cat "$TMP/batch_fail.err" >&2
+[[ "$RC" -eq 1 ]] || fail "failing batch exited $RC, want 1"
+grep -q '^\[1/3\] OK: clicked \[2\] <button> "Go" @40,60 (0\.34s)$' "$TMP/batch_fail.out" \
+  || fail "batch fail-fast did not run step 1"
+if grep -q '\[2/3\]' "$TMP/batch_fail.out" || grep -q '\[3/3\]' "$TMP/batch_fail.out" || grep -q 'Typed' "$TMP/batch_fail.out"; then
+  fail "batch did not stop fast before step 3"
+fi
+grep -q 'BATCH STEP FAILED: step 2 ("click 99"): element \[99\] not found' "$TMP/batch_fail.err" \
+  || fail "batch fail-fast error message malformed"
+grep -q '^TAB \[1\] Fake Tab | https://example\.test$' "$TMP/batch_fail.err" \
+  || fail "batch fail-fast did not attach fresh snapshot header"
+grep -q '^\[2\] <button> "Go" @40,60$' "$TMP/batch_fail.err" \
+  || fail "batch fail-fast did not attach fresh snapshot elements"
+
 kill "$FAKE_PID" 2>/dev/null || true
 wait "$FAKE_PID" 2>/dev/null || true
 FAKE_PID=""

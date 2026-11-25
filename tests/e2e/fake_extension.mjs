@@ -124,53 +124,87 @@ function captureResult(includeElements) {
   };
 }
 
-function snapResult(formsOnly) {
+function snapResult(formsOnly, diff = false) {
+  const baseElements = formsOnly
+    ? [
+        {
+          id: 1,
+          tag: "input",
+          type: "text",
+          label: "Search",
+          value: "",
+          state: "",
+          x: 10,
+          y: 20,
+          w: 200,
+          h: 32,
+        },
+      ]
+    : [
+        {
+          id: 1,
+          tag: "input",
+          type: "text",
+          label: "Search",
+          value: "",
+          state: "",
+          x: 10,
+          y: 20,
+          w: 200,
+          h: 32,
+        },
+        {
+          id: 2,
+          tag: "button",
+          type: "",
+          label: "Go",
+          value: "",
+          state: "",
+          x: 40,
+          y: 60,
+          w: 80,
+          h: 32,
+        },
+      ];
+
+  if (diff === true) {
+    const added = {
+      id: 3,
+      tag: "button",
+      type: "",
+      label: "Confirm",
+      value: "",
+      state: "",
+      x: 120,
+      y: 240,
+      w: 90,
+      h: 32,
+      change: "added",
+    };
+    return {
+      tabId: 1,
+      title: "Fake Tab",
+      url: "https://example.test",
+      docId: "doc-1",
+      snapshotId: 2,
+      viewport: { scrollY: 0, viewportHeight: 900, totalHeight: 4200, percent: 21 },
+      elements: [...baseElements, added],
+      removed: [],
+      formattedText: [
+        "TAB [1] Fake Tab | https://example.test",
+        "VIEWPORT: 0-900px of 4200px (21%)",
+        "DIFF (+1 added, ~0 changed, -0 removed, 2 moved):",
+        '+ [3] <button> "Confirm" @120,240',
+      ].join("\n"),
+    };
+  }
+
   return {
     tabId: 1,
     title: "Fake Tab",
     url: "https://example.test",
     viewport: { scrollY: 0, viewportHeight: 900, totalHeight: 4200, percent: 21 },
-    elements: formsOnly
-      ? [
-          {
-            id: 1,
-            tag: "input",
-            type: "text",
-            label: "Search",
-            value: "",
-            state: "",
-            x: 10,
-            y: 20,
-            w: 200,
-            h: 32,
-          },
-        ]
-      : [
-          {
-            id: 1,
-            tag: "input",
-            type: "text",
-            label: "Search",
-            value: "",
-            state: "",
-            x: 10,
-            y: 20,
-            w: 200,
-            h: 32,
-          },
-          {
-            id: 2,
-            tag: "button",
-            type: "",
-            label: "Go",
-            value: "",
-            state: "",
-            x: 40,
-            y: 60,
-            w: 80,
-            h: 32,
-          },
-        ],
+    elements: baseElements,
     formattedText: formsOnly
       ? 'TAB [1] Fake Tab | https://example.test\nVIEWPORT: 0-900px of 4200px (21%)\n[1] <input:text> "Search" () @10,20'
       : 'TAB [1] Fake Tab | https://example.test\nVIEWPORT: 0-900px of 4200px (21%)\n[1] <input:text> "Search" () @10,20\n[2] <button> "Go" @40,60',
@@ -247,21 +281,96 @@ function handle(method, params) {
       };
     case "tab.list":
       return { tabs: Array.from({ length: tabCount }, (_, index) => makeTab(index + 1)) };
-    case "tab.open":
-      return { tabId: 1, url: params.url, title: "Opened Page", loaded: true };
+    case "tab.open": {
+      const url = String(params.url ?? "https://example.test");
+      const result = { tabId: 1, url, title: "Opened Page", loaded: true };
+      if (params.waitNetwork === true || (typeof params.waitText === "string" && params.waitText !== "")) {
+        result.wait = { waitedMs: 42, matched: true, requests: 2 };
+      }
+      if (params.snap === true) {
+        const snap = snapResult(false, false);
+        snap.url = url;
+        snap.title = "Opened Page";
+        snap.formattedText = [
+          `TAB [1] Opened Page | ${url}`,
+          "VIEWPORT: 0-900px of 4200px (21%)",
+          '[1] <input:text> "Search" () @10,20',
+          '[2] <button> "Go" @40,60',
+        ].join("\n");
+        result.snapshot = snap;
+      }
+      return result;
+    }
     case "tab.switch":
       return { success: true, activeTabId: params.tabId };
     case "page.snap":
-      return snapResult(params.formsOnly);
-    case "page.read":
+      return snapResult(params.formsOnly, params.diff === true);
+    case "page.read": {
+      const fullMarkdown = `# Fake Heading\n\nRequested: ${params.id ?? params.selector ?? "page"}`;
+      if (typeof params.maxChars === "number" && params.maxChars > 0 && fullMarkdown.length > params.maxChars) {
+        return {
+          markdown: `${fullMarkdown.slice(0, params.maxChars)}\n\n[truncated]`,
+          truncated: true,
+        };
+      }
       return {
-        markdown: `# Fake Heading\n\nRequested: ${params.id ?? params.selector ?? "page"}`,
+        markdown: fullMarkdown,
+      };
+    }
+    case "page.formstate":
+      return {
+        controls: [
+          {
+            frame: "top",
+            tag: "input",
+            type: "text",
+            name: "notes",
+            id: "notes-input",
+            value: "Ada Lovelace",
+            label: `Long Notes ${"a".repeat(120)} TAIL_MARKER`,
+          },
+          {
+            frame: "top",
+            tag: "input",
+            type: "text",
+            name: "empty_notes",
+            id: "empty-notes",
+            value: "",
+            label: "Optional Notes",
+          },
+          {
+            frame: "top",
+            tag: "input",
+            type: "checkbox",
+            name: "agree",
+            id: "agree-box",
+            checked: true,
+            label: "Accept Terms",
+          },
+          {
+            frame: "top",
+            tag: "input",
+            type: "checkbox",
+            name: "newsletter",
+            id: "news-box",
+            checked: false,
+            label: "Newsletter",
+          },
+        ],
       };
     case "action.click": {
+      let target = { id: params.id, tag: "button", label: "Go" };
+      if (typeof params.id === "number" && params.id > 0) {
+        const el = snapResult(false).elements.find((item) => item.id === params.id);
+        if (!el) {
+          return fail(-32001, `element [${params.id}] not found in the current snapshot`);
+        }
+        target = { id: el.id, tag: el.tag, label: el.label };
+      }
       const result = {
         success: true,
         action: "click",
-        target: { id: params.id, tag: "button", label: "Go" },
+        target,
         coordinates: { x: 40, y: 60 },
         durationMs: 340,
       };
@@ -283,10 +392,20 @@ function handle(method, params) {
       }
       return result;
     }
-    case "action.press":
-      return { success: true, key: params.key };
-    case "action.scroll":
-      return { scrolledPixels: 720, newScrollY: 720, viewportPercent: 17 };
+    case "action.press": {
+      const result = { success: true, key: params.key };
+      if (params.snap === true) {
+        result.snapshot = snapResult(false, true);
+      }
+      return result;
+    }
+    case "action.scroll": {
+      const result = { scrolledPixels: 720, newScrollY: 720, viewportPercent: 17 };
+      if (params.snap === true) {
+        result.snapshot = snapResult(false, true);
+      }
+      return result;
+    }
     case "action.upload":
       return {
         success: true,
