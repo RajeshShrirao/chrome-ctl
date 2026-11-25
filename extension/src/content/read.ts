@@ -585,10 +585,28 @@ function tableRows(table: Element): Element[] {
   );
 }
 
-function extractTable(table: Element, index: number): ReadTable | null {
+function cellsCharCount(cells: string[]): number {
+  let total = 0;
+  for (const cell of cells) {
+    total += cell.length;
+  }
+  return total;
+}
+
+interface ExtractedSingleTable {
+  table: ReadTable | null;
+  charsUsed: number;
+  budgetExhausted: boolean;
+}
+
+function extractTable(
+  table: Element,
+  index: number,
+  remainingChars: number,
+): ExtractedSingleTable {
   const rows = tableRows(table);
   if (rows.length === 0) {
-    return null;
+    return { table: null, charsUsed: 0, budgetExhausted: false };
   }
 
   let headers: string[] = [];
@@ -609,6 +627,13 @@ function extractTable(table: Element, index: number): ReadTable | null {
     }
   }
 
+  const headerChars = cellsCharCount(headers);
+  if (headerChars > remainingChars) {
+    return { table: null, charsUsed: 0, budgetExhausted: true };
+  }
+
+  let charsUsed = headerChars;
+  let budgetExhausted = false;
   const body: string[][] = [];
   for (let cursor = start; cursor < rows.length && body.length < MAX_TABLE_ROWS; cursor += 1) {
     const cells = rowCells(rows[cursor])
@@ -617,11 +642,17 @@ function extractTable(table: Element, index: number): ReadTable | null {
     if (cells.length === 0) {
       continue;
     }
+    const rowChars = cellsCharCount(cells);
+    if (charsUsed + rowChars > remainingChars) {
+      budgetExhausted = true;
+      break;
+    }
+    charsUsed += rowChars;
     body.push(cells);
   }
 
   if (headers.length === 0 && body.length === 0) {
-    return null;
+    return { table: null, charsUsed: 0, budgetExhausted };
   }
 
   const caption = collapseWhitespace(table.querySelector("caption")?.textContent);
@@ -633,7 +664,7 @@ function extractTable(table: Element, index: number): ReadTable | null {
   if (caption !== "") {
     result.caption = caption;
   }
-  return result;
+  return { table: result, charsUsed, budgetExhausted };
 }
 
 /** Extract tables from a document or subtree as header + row arrays. */
@@ -641,11 +672,14 @@ export function extractTables(
   doc: Document,
   root?: Element,
   maxTables = MAX_READ_TABLES,
+  maxChars = 100_000,
 ): ExtractedTables {
   const target = root ?? doc.body ?? doc.documentElement;
   const limit = Math.max(1, Math.min(MAX_READ_TABLES, maxTables));
+  const charLimit = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : 100_000;
   const tables: ReadTable[] = [];
   let truncated = false;
+  let charsUsed = 0;
 
   const found: Element[] = Array.from(target.querySelectorAll("table"));
   if (target.tagName.toLowerCase() === "table") {
@@ -657,12 +691,17 @@ export function extractTables(
       truncated = true;
       break;
     }
-    const extracted = extractTable(table, tables.length + 1);
-    if (extracted) {
-      tables.push(extracted);
-      if (extracted.rows.length >= MAX_TABLE_ROWS) {
+    const outcome = extractTable(table, tables.length + 1, charLimit - charsUsed);
+    if (outcome.table) {
+      tables.push(outcome.table);
+      charsUsed += outcome.charsUsed;
+      if (outcome.table.rows.length >= MAX_TABLE_ROWS) {
         truncated = true;
       }
+    }
+    if (outcome.budgetExhausted) {
+      truncated = true;
+      break;
     }
   }
 

@@ -51,7 +51,10 @@ import * as debuggerController from "./debugger.js";
 import { forgetTab, isNetworkEnabled, noteNavigation, snapshot as netSnapshot, waitForQuiet } from "./netlog.js";
 import { handlePageDescribe, handlePageResolve } from "./resolver.js";
 import type { ResolverDeps } from "./resolver.js";
+import { formatSnapDiff, formatSnapHeaderUrl } from "./snap_format.js";
 import { sso } from "./sso.js";
+
+export { formatSnapDiff, formatSnapHeaderUrl } from "./snap_format.js";
 import {
   activeTabIn,
   automationActiveTab,
@@ -242,19 +245,23 @@ interface SnapIdentity {
 
 const lastSnap = new Map<number, SnapIdentity>();
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading" || changeInfo.url !== undefined) {
-    // Keep the identity on purpose: ids from the previous document must fail as
-    // stale (`-32010`) until a new snap installs the current docId. Clearing it
-    // here would let a renumbered id silently resolve against a new element.
-    noteNavigation(tabId);
-  }
-});
+if (typeof chrome !== "undefined" && chrome.tabs?.onUpdated) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status === "loading" || changeInfo.url !== undefined) {
+      // Keep the identity on purpose: ids from the previous document must fail as
+      // stale (`-32010`) until a new snap installs the current docId. Clearing it
+      // here would let a renumbered id silently resolve against a new element.
+      noteNavigation(tabId);
+    }
+  });
+}
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  lastSnap.delete(tabId);
-  forgetTab(tabId);
-});
+if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved) {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    lastSnap.delete(tabId);
+    forgetTab(tabId);
+  });
+}
 
 function requestUsesSnapshotId(request: ContentRequest): boolean {
   switch (request.type) {
@@ -491,6 +498,38 @@ async function handleTabOpen(params: Record<string, unknown>): Promise<TabOpenRe
   const tabId = tabIdOf(tab);
   const loaded = await waitForTabLoad(tabId, TAB_LOAD_TIMEOUT_MS);
 
+  const waitNetwork = params.waitNetwork === true;
+  const waitText =
+    typeof params.waitText === "string" && params.waitText !== ""
+      ? params.waitText
+      : undefined;
+
+  let wait: PageWaitResult | undefined;
+  if (waitNetwork || waitText !== undefined) {
+    const waitTimeoutMs = clampWaitTimeout(params.waitTimeoutMs);
+    try {
+      wait = await runWaitCondition(tabId, {
+        network: waitNetwork,
+        text: waitText,
+        ignoreCase: params.waitIgnoreCase === true,
+        timeoutMs: waitTimeoutMs,
+      });
+    } catch (error) {
+      if (error instanceof RpcFault && error.code === ErrorCodes.debuggerDetached) {
+        throw error;
+      }
+      if (/did not respond|timed out/i.test(describeError(error))) {
+        wait = {
+          waitedMs: waitTimeoutMs,
+          matched: false,
+          reason: "timeout",
+        };
+      } else {
+        throw error;
+      }
+    }
+  }
+
   let finalTab = tab;
   try {
     finalTab = await chrome.tabs.get(tabId);
@@ -498,12 +537,25 @@ async function handleTabOpen(params: Record<string, unknown>): Promise<TabOpenRe
     // Keep the creation/update snapshot if the tab vanished.
   }
 
-  return {
+  let snapshot: SnapResult | undefined;
+  if (params.snap === true) {
+    await settleBeforeSnap(tabId);
+    snapshot = await buildSnapResult(finalTab, { diff: false });
+  }
+
+  const result: TabOpenResult = {
     tabId,
     url: finalTab.url ?? url.href,
     title: finalTab.title ?? "",
     loaded,
   };
+  if (wait !== undefined) {
+    result.wait = wait;
+  }
+  if (snapshot !== undefined) {
+    result.snapshot = snapshot;
+  }
+  return result;
 }
 
 async function handleTabSwitch(params: Record<string, unknown>): Promise<TabSwitchResult> {
@@ -747,7 +799,7 @@ async function buildSnapResult(
   const { docId, snapshotId, omitted, viewport, elements, lines, framesSummary } = response.snap;
   const removed = response.snap.removed ?? [];
   const headerLines: string[] = [
-    `SNAP ${snapshotId} | TAB [${tabId}] ${current.title ?? ""} | ${current.url ?? ""}`,
+    `SNAP ${snapshotId} | TAB [${tabId}] ${current.title ?? ""} | ${formatSnapHeaderUrl(current.url ?? "")}`,
     `VIEWPORT: ${Math.round(viewport.scrollY)}-${Math.round(viewport.scrollY + viewport.viewportHeight)}px of ${Math.round(viewport.totalHeight)}px (${Math.round(viewport.percent)}%)`,
   ];
   if (framesSummary) {
@@ -763,48 +815,7 @@ async function buildSnapResult(
 
   const sameDocument = lastSnap.get(tabId)?.docId === docId;
   if (options.diff === true && sameDocument && lastElements && lastElements.length > 0) {
-    const oldById = new Map<number, SnapElement>();
-    for (const el of lastElements) {
-      oldById.set(el.id, el);
-    }
-    const added: string[] = [];
-    const changed: string[] = [];
-    const gone: string[] = [];
-
-    for (const el of elements) {
-      const old = oldById.get(el.id);
-      if (!old) {
-        added.push(`+ [${el.id}] <${el.tag}> "${el.label}" @${el.x},${el.y}`);
-      } else if (
-        el.change === "updated" ||
-        el.change === "moved" ||
-        old.label !== el.label ||
-        old.x !== el.x ||
-        old.y !== el.y
-      ) {
-        changed.push(`~ [${el.id}] <${el.tag}> "${el.label}" @${el.x},${el.y}`);
-      }
-    }
-    for (const id of removed) {
-      const old = oldById.get(id);
-      gone.push(old ? `- [${id}] <${old.tag}> "${old.label}"` : `- [${id}]`);
-    }
-
-    if (added.length > 0 || changed.length > 0 || gone.length > 0) {
-      const diffLines = [
-        ...headerLines,
-        `DIFF (+${added.length} added, ~${changed.length} changed, -${gone.length} removed):`,
-        ...added,
-        ...changed,
-        ...gone,
-      ];
-      formattedText = diffLines.join("\n");
-    } else {
-      formattedText = [
-        ...headerLines,
-        `DIFF: no interactive elements added, changed, or removed.`,
-      ].join("\n");
-    }
+    formattedText = formatSnapDiff(headerLines, lastElements, elements, removed);
   } else {
     formattedText = [
       ...headerLines,
@@ -841,6 +852,7 @@ async function handlePageSnap(params: Record<string, unknown>): Promise<SnapResu
     formsOnly: params.formsOnly === true,
     deep: params.deep === true,
     frames: params.frames === true,
+    diff: params.diff === true,
   };
   if (typeof params.maxElements === "number" && Number.isFinite(params.maxElements)) {
     options.maxElements = params.maxElements;
@@ -873,6 +885,9 @@ async function handlePageRead(params: Record<string, unknown>): Promise<PageRead
   }
   if (typeof params.maxLinks === "number" && params.maxLinks > 0) {
     request.maxLinks = Math.round(params.maxLinks);
+  }
+  if (typeof params.maxChars === "number" && Number.isFinite(params.maxChars) && params.maxChars > 0) {
+    request.maxChars = Math.round(params.maxChars);
   }
 
   const response = await sendWithIdentity(tabId, request);
@@ -1020,36 +1035,31 @@ interface WaitOutcome {
   requests?: number;
 }
 
-async function handlePageWait(params: Record<string, unknown>): Promise<PageWaitResult> {
-  const tab = await resolveActionTab(params);
-  const tabId = tabIdOf(tab);
-  const timeoutMs = clampWaitTimeout(params.timeoutMs);
+interface WaitConditionOptions {
+  network?: boolean;
+  text?: string;
+  ignoreCase?: boolean;
+  timeoutMs?: unknown;
+  quietMs?: unknown;
+  longPollMs?: unknown;
+}
+
+async function runWaitCondition(
+  tabId: number,
+  options: WaitConditionOptions,
+): Promise<PageWaitResult> {
+  const timeoutMs = clampWaitTimeout(options.timeoutMs);
   const text =
-    typeof params.text === "string" && params.text !== "" ? params.text : undefined;
-  const network = params.network === true;
+    typeof options.text === "string" && options.text !== "" ? options.text : undefined;
+  const network = options.network === true;
   const quietMs =
-    typeof params.quietMs === "number" && Number.isFinite(params.quietMs)
-      ? Math.max(50, Math.min(10_000, Math.round(params.quietMs)))
+    typeof options.quietMs === "number" && Number.isFinite(options.quietMs)
+      ? Math.max(50, Math.min(10_000, Math.round(options.quietMs)))
       : 500;
   const longPollMs =
-    typeof params.longPollMs === "number" && Number.isFinite(params.longPollMs)
-      ? Math.max(1_000, Math.round(params.longPollMs))
+    typeof options.longPollMs === "number" && Number.isFinite(options.longPollMs)
+      ? Math.max(1_000, Math.round(options.longPollMs))
       : undefined;
-
-  if (!network && text === undefined) {
-    const request: ContentRequest = {
-      channel: CONTENT_CHANNEL,
-      type: "wait",
-      timeoutMs,
-    };
-    if (typeof params.selector === "string") {
-      request.selector = params.selector;
-    }
-    if (params.idle === true) {
-      request.idle = true;
-    }
-    return contentWait(tabId, request, timeoutMs);
-  }
 
   const waits: Promise<WaitOutcome>[] = [];
 
@@ -1071,10 +1081,14 @@ async function handlePageWait(params: Record<string, unknown>): Promise<PageWait
       channel: CONTENT_CHANNEL,
       type: "wait",
       text,
-      ignoreCase: params.ignoreCase === true,
+      ignoreCase: options.ignoreCase === true,
       timeoutMs,
     };
     waits.push(contentWait(tabId, request, timeoutMs));
+  }
+
+  if (waits.length === 0) {
+    return { waitedMs: 0, matched: true };
   }
 
   const outcomes = await Promise.all(waits);
@@ -1087,6 +1101,39 @@ async function handlePageWait(params: Record<string, unknown>): Promise<PageWait
     inflight: networkOutcome?.inflight,
     requests: networkOutcome?.requests,
   };
+}
+
+async function handlePageWait(params: Record<string, unknown>): Promise<PageWaitResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const text =
+    typeof params.text === "string" && params.text !== "" ? params.text : undefined;
+  const network = params.network === true;
+
+  if (!network && text === undefined) {
+    const timeoutMs = clampWaitTimeout(params.timeoutMs);
+    const request: ContentRequest = {
+      channel: CONTENT_CHANNEL,
+      type: "wait",
+      timeoutMs,
+    };
+    if (typeof params.selector === "string") {
+      request.selector = params.selector;
+    }
+    if (params.idle === true) {
+      request.idle = true;
+    }
+    return contentWait(tabId, request, timeoutMs);
+  }
+
+  return runWaitCondition(tabId, {
+    network,
+    text,
+    ignoreCase: params.ignoreCase === true,
+    timeoutMs: params.timeoutMs,
+    quietMs: params.quietMs,
+    longPollMs: params.longPollMs,
+  });
 }
 
 async function handlePageNet(params: Record<string, unknown>): Promise<PageNetResult> {
@@ -1188,6 +1235,18 @@ async function handleActionClick(
   return result;
 }
 
+async function attachDiffSnapshot(
+  tab: chrome.tabs.Tab,
+  tabId: number,
+  params: Record<string, unknown>,
+  result: { snapshot?: SnapResult },
+): Promise<void> {
+  if (params.snap === true) {
+    await settleBeforeSnap(tabId);
+    result.snapshot = await buildSnapResult(tab, { diff: true });
+  }
+}
+
 async function handleActionType(
   params: Record<string, unknown>,
 ): Promise<ActionTypeResult> {
@@ -1205,10 +1264,7 @@ async function handleActionType(
     sendContent: sendWithIdentity,
   });
 
-  if (params.snap === true) {
-    await settleBeforeSnap(tabId);
-    result.snapshot = await buildSnapResult(tab, { diff: true });
-  }
+  await attachDiffSnapshot(tab, tabId, params, result);
   return result;
 }
 
@@ -1222,12 +1278,14 @@ async function handleActionPress(
     ? params.modifiers.filter((value): value is string => typeof value === "string")
     : [];
 
-  return press(
+  const result = await press(
     tabId,
     key,
     modifiers,
     typeof params.seed === "string" ? params.seed : undefined,
   );
+  await attachDiffSnapshot(tab, tabId, params, result);
+  return result;
 }
 
 async function handleActionScroll(
@@ -1238,26 +1296,30 @@ async function handleActionScroll(
 
   await ensureContentScriptInjected(tabId);
 
+  let result: ActionScrollResult;
   if (typeof params.toSelector === "string" && params.toSelector.trim() !== "") {
-    return scroll(tabId, {
+    result = await scroll(tabId, {
       toSelector: params.toSelector.trim(),
+      seed: typeof params.seed === "string" ? params.seed : undefined,
+      sendContent: sendWithIdentity,
+    });
+  } else {
+    const amount = requireNumberParam(params, "amount");
+
+    if (params.direction !== "down" && params.direction !== "up") {
+      throw new RpcFault(ErrorCodes.internal, 'direction must be "down" or "up"');
+    }
+
+    result = await scroll(tabId, {
+      direction: params.direction,
+      amount,
       seed: typeof params.seed === "string" ? params.seed : undefined,
       sendContent: sendWithIdentity,
     });
   }
 
-  const amount = requireNumberParam(params, "amount");
-
-  if (params.direction !== "down" && params.direction !== "up") {
-    throw new RpcFault(ErrorCodes.internal, 'direction must be "down" or "up"');
-  }
-
-  return scroll(tabId, {
-    direction: params.direction,
-    amount,
-    seed: typeof params.seed === "string" ? params.seed : undefined,
-    sendContent: sendWithIdentity,
-  });
+  await attachDiffSnapshot(tab, tabId, params, result);
+  return result;
 }
 
 async function handleActionUpload(
@@ -1632,60 +1694,70 @@ function isRuntimeMessage(value: unknown): value is RuntimeMessage {
   return typeof candidate.target === "string" && typeof candidate.type === "string";
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  if (!isRuntimeMessage(message) || message.target !== "sw") {
-    return false;
-  }
-
-  if (message.type === "ensureOffscreen") {
-    ensureOffscreenDocument()
-      .then(() => sendResponse({ ok: true }))
-      .catch((error: unknown) =>
-        sendResponse({ ok: false, error: error instanceof Error ? error.message : "failed" }),
-      );
-    return true;
-  }
-
-  if (message.type === "getToken") {
-    void readToken().then(sendResponse);
-    return true;
-  }
-
-  if (message.type === "pairToken") {
-    if (!TOKEN_PATTERN.test(message.token)) {
-      sendResponse({ ok: false });
+if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
+  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    if (!isRuntimeMessage(message) || message.target !== "sw") {
       return false;
     }
-    void chrome.storage.local
-      .set({ [TOKEN_KEY]: message.token })
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
-    return true;
-  }
 
-  if (message.type === "rpc") {
-    void handleRpc(message.request).then(sendResponse);
-    return true;
-  }
+    if (message.type === "ensureOffscreen") {
+      ensureOffscreenDocument()
+        .then(() => sendResponse({ ok: true }))
+        .catch((error: unknown) =>
+          sendResponse({ ok: false, error: error instanceof Error ? error.message : "failed" }),
+        );
+      return true;
+    }
 
-  return false;
-});
+    if (message.type === "getToken") {
+      void readToken().then(sendResponse);
+      return true;
+    }
 
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !(TOKEN_KEY in changes)) {
-    return;
-  }
-  const next = changes[TOKEN_KEY]?.newValue;
-  relayToken(typeof next === "string" && next.length > 0 ? next : undefined);
-});
+    if (message.type === "pairToken") {
+      if (!TOKEN_PATTERN.test(message.token)) {
+        sendResponse({ ok: false });
+        return false;
+      }
+      void chrome.storage.local
+        .set({ [TOKEN_KEY]: message.token })
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }));
+      return true;
+    }
 
-chrome.runtime.onInstalled.addListener(() => {
-  void ensureOffscreenDocument().catch(() => {});
-});
+    if (message.type === "rpc") {
+      void handleRpc(message.request).then(sendResponse);
+      return true;
+    }
 
-chrome.runtime.onStartup.addListener(() => {
-  void ensureOffscreenDocument().catch(() => {});
-});
+    return false;
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local" || !(TOKEN_KEY in changes)) {
+      return;
+    }
+    const next = changes[TOKEN_KEY]?.newValue;
+    relayToken(typeof next === "string" && next.length > 0 ? next : undefined);
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime?.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    void ensureOffscreenDocument().catch(() => {});
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime?.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    void ensureOffscreenDocument().catch(() => {});
+  });
+}
 
 // Fire-and-forget on worker load; the popup and install hooks retry.
-void ensureOffscreenDocument().catch(() => {});
+if (typeof chrome !== "undefined" && typeof chrome.runtime?.getContexts === "function") {
+  void ensureOffscreenDocument().catch(() => {});
+}

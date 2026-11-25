@@ -25,7 +25,7 @@
 | `window.use` | `MethodWindowUse` | `windowUse` | 10000 ms |
 | `window.close` | `MethodWindowClose` | `windowClose` | 10000 ms |
 | `tab.list` | `MethodTabList` | `tabList` | 10000 ms |
-| `tab.open` | `MethodTabOpen` | `tabOpen` | 10000 ms |
+| `tab.open` | `MethodTabOpen` | `tabOpen` | 45000 ms |
 | `tab.switch` | `MethodTabSwitch` | `tabSwitch` | 10000 ms |
 | `page.snap` | `MethodPageSnap` | `pageSnap` | 10000 ms |
 | `page.read` | `MethodPageRead` | `pageRead` | 10000 ms |
@@ -80,6 +80,7 @@
 | `ActionMediumTimeout` | 60000 ms | action.click, action.scroll, action.upload |
 | `ActionPressTimeout` | 20000 ms | action.press |
 | `PageWaitTimeout` | 45000 ms | page.wait |
+| `TabOpenTimeout` | 45000 ms | tab.open |
 | `MediaCaptureTimeout` | 30000 ms | media.capture |
 | `PageDescribeTimeout` | 5000 ms | page.describe |
 | `PageResolveTimeout` | 20000 ms | page.resolve |

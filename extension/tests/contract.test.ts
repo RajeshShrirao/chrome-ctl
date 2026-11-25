@@ -73,7 +73,41 @@ test("contract matches TypeScript protocol constants", () => {
       assert.equal(rpcTimeoutMs(methodName), group.ms, `timeout for ${methodName}`);
     }
   }
+  assert.equal(rpcTimeoutMs(Methods.tabOpen), 45000);
   assert.equal(rpcTimeoutMs("unknown.method"), DEFAULT_RPC_TIMEOUT_MS);
+});
+
+test("round-trip serialization preserves new optional turn-collapsing and read-bounds fields", () => {
+  const openReq = {
+    jsonrpc: "2.0",
+    id: "req-open",
+    method: Methods.tabOpen,
+    params: {
+      url: "https://example.test",
+      waitNetwork: true,
+      waitText: "Loaded",
+      waitIgnoreCase: true,
+      waitTimeoutMs: 15000,
+      snap: true,
+    },
+  };
+  assert.deepEqual(JSON.parse(JSON.stringify(openReq)), openReq);
+
+  const readReq = {
+    jsonrpc: "2.0",
+    id: "req-read",
+    method: Methods.pageRead,
+    params: { maxChars: 4096 },
+  };
+  assert.deepEqual(JSON.parse(JSON.stringify(readReq)), readReq);
+
+  const snapReq = {
+    jsonrpc: "2.0",
+    id: "req-snap",
+    method: Methods.pageSnap,
+    params: { diff: true },
+  };
+  assert.deepEqual(JSON.parse(JSON.stringify(snapReq)), snapReq);
 });
 
 test("round-trip JSON-RPC message serialization", () => {

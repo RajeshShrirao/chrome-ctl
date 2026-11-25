@@ -34,6 +34,7 @@ export interface ContentReadRequest {
   maxTables?: number;
   maxLinks?: number;
   forms?: boolean;
+  maxChars?: number;
   expectedDocId?: string;
 }
 

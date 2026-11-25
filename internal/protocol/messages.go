@@ -142,16 +142,23 @@ type TabListResult struct {
 }
 
 type TabOpenParams struct {
-	URL      string `json:"url"`
-	NewTab   bool   `json:"newTab,omitempty"`
-	WindowID *int   `json:"windowId,omitempty"`
+	URL            string `json:"url"`
+	NewTab         bool   `json:"newTab,omitempty"`
+	WindowID       *int   `json:"windowId,omitempty"`
+	WaitNetwork    bool   `json:"waitNetwork,omitempty"`
+	WaitText       string `json:"waitText,omitempty"`
+	WaitIgnoreCase bool   `json:"waitIgnoreCase,omitempty"`
+	WaitTimeoutMs  int    `json:"waitTimeoutMs,omitempty"`
+	Snap           bool   `json:"snap,omitempty"`
 }
 
 type TabOpenResult struct {
-	TabID  int    `json:"tabId"`
-	URL    string `json:"url"`
-	Title  string `json:"title"`
-	Loaded bool   `json:"loaded"`
+	TabID    int             `json:"tabId"`
+	URL      string          `json:"url"`
+	Title    string          `json:"title"`
+	Loaded   bool            `json:"loaded"`
+	Wait     *PageWaitResult `json:"wait,omitempty"`
+	Snapshot *SnapResult     `json:"snapshot,omitempty"`
 }
 
 type TabSwitchParams struct {
@@ -170,6 +177,7 @@ type PageSnapParams struct {
 	Deep        bool `json:"deep,omitempty"`
 	MaxElements int  `json:"maxElements,omitempty"`
 	Frames      bool `json:"frames,omitempty"`
+	Diff        bool `json:"diff,omitempty"`
 }
 
 type ViewportInfo struct {
@@ -218,6 +226,7 @@ type PageReadParams struct {
 	MaxTables int    `json:"maxTables,omitempty"`
 	MaxLinks  int    `json:"maxLinks,omitempty"`
 	Forms     bool   `json:"forms,omitempty"`
+	MaxChars  int    `json:"maxChars,omitempty"`
 }
 
 // ReadTable is one table extracted in tables mode. Rows never include the
@@ -306,13 +315,15 @@ type ActionPressParams struct {
 	TabID     *int     `json:"tabId,omitempty"`
 	Key       string   `json:"key"`
 	Modifiers []string `json:"modifiers,omitempty"`
+	Snap      bool     `json:"snap,omitempty"`
 	Seed      string   `json:"seed,omitempty"`
 }
 
 type ActionPressResult struct {
-	Success bool   `json:"success"`
-	Key     string `json:"key"`
-	Seed    string `json:"seed,omitempty"`
+	Success  bool        `json:"success"`
+	Key      string      `json:"key"`
+	Seed     string      `json:"seed,omitempty"`
+	Snapshot *SnapResult `json:"snapshot,omitempty"`
 }
 
 type ActionScrollParams struct {
@@ -320,16 +331,18 @@ type ActionScrollParams struct {
 	Direction  string  `json:"direction,omitempty"`
 	Amount     float64 `json:"amount,omitempty"`
 	ToSelector string  `json:"toSelector,omitempty"`
+	Snap       bool    `json:"snap,omitempty"`
 	Seed       string  `json:"seed,omitempty"`
 }
 
 type ActionScrollResult struct {
-	ScrolledPixels  float64 `json:"scrolledPixels"`
-	NewScrollY      float64 `json:"newScrollY"`
-	ViewportPercent float64 `json:"viewportPercent"`
-	Target          string  `json:"target,omitempty"`
-	Frame           string  `json:"frame,omitempty"`
-	Seed            string  `json:"seed,omitempty"`
+	ScrolledPixels  float64     `json:"scrolledPixels"`
+	NewScrollY      float64     `json:"newScrollY"`
+	ViewportPercent float64     `json:"viewportPercent"`
+	Target          string      `json:"target,omitempty"`
+	Frame           string      `json:"frame,omitempty"`
+	Seed            string      `json:"seed,omitempty"`
+	Snapshot        *SnapResult `json:"snapshot,omitempty"`
 }
 
 type ActionUploadParams struct {

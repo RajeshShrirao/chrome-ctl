@@ -81,6 +81,8 @@ export function rpcTimeoutMs(method: string): number {
       return 20000;
     case Methods.pageWait:
       return 45000;
+    case Methods.tabOpen:
+      return 45000;
     case Methods.mediaCapture:
       return 30000;
     case Methods.pageDescribe:

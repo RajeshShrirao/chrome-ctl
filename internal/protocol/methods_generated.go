@@ -69,6 +69,7 @@ const (
 	ActionMediumTimeout = 60000 * time.Millisecond
 	ActionPressTimeout  = 20000 * time.Millisecond
 	PageWaitTimeout     = 45000 * time.Millisecond
+	TabOpenTimeout      = 45000 * time.Millisecond
 	MediaCaptureTimeout = 30000 * time.Millisecond
 	PageDescribeTimeout = 5000 * time.Millisecond
 	PageResolveTimeout  = 20000 * time.Millisecond
@@ -93,6 +94,7 @@ var methodTimeouts = map[string]time.Duration{
 	"action.upload": ActionMediumTimeout,
 	"action.press":  ActionPressTimeout,
 	"page.wait":     PageWaitTimeout,
+	"tab.open":      TabOpenTimeout,
 	"media.capture": MediaCaptureTimeout,
 	"page.describe": PageDescribeTimeout,
 	"page.resolve":  PageResolveTimeout,

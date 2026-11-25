@@ -68,6 +68,7 @@
       { "go": "ActionMediumTimeout", "name": "medium actions (click, scroll, upload)", "ms": 60000, "methods": ["action.click", "action.scroll", "action.upload"] },
       { "go": "ActionPressTimeout", "name": "single key press", "ms": 20000, "methods": ["action.press"] },
       { "go": "PageWaitTimeout", "name": "page wait polling", "ms": 45000, "methods": ["page.wait"] },
+      { "go": "TabOpenTimeout", "name": "tab open and wait", "ms": 45000, "methods": ["tab.open"] },
       { "go": "MediaCaptureTimeout", "name": "screenshot capture", "ms": 30000, "methods": ["media.capture"] },
       { "go": "PageDescribeTimeout", "name": "element descriptor", "ms": 5000, "methods": ["page.describe"] },
       { "go": "PageResolveTimeout", "name": "selector resolution", "ms": 20000, "methods": ["page.resolve"] },

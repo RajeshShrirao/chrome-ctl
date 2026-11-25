@@ -62,11 +62,24 @@ export interface TabListResult {
   tabs: TabInfo[];
 }
 
+export interface TabOpenParams {
+  url: string;
+  newTab?: boolean;
+  windowId?: number;
+  waitNetwork?: boolean;
+  waitText?: string;
+  waitIgnoreCase?: boolean;
+  waitTimeoutMs?: number;
+  snap?: boolean;
+}
+
 export interface TabOpenResult {
   tabId: number;
   url: string;
   title: string;
   loaded: boolean;
+  wait?: PageWaitResult;
+  snapshot?: SnapResult;
 }
 
 export interface TabSwitchResult {
@@ -132,6 +145,16 @@ export interface SnapElement {
   change?: SnapChange;
 }
 
+export interface PageSnapParams {
+  tabId?: number;
+  all?: boolean;
+  formsOnly?: boolean;
+  deep?: boolean;
+  maxElements?: number;
+  frames?: boolean;
+  diff?: boolean;
+}
+
 export interface SnapResult {
   tabId: number;
   title: string;
@@ -145,6 +168,17 @@ export interface SnapResult {
   framesSummary?: string;
   /** Ids that left the document since the previous snapshot. */
   removed?: number[];
+}
+
+export interface PageReadParams {
+  tabId?: number;
+  id?: number;
+  selector?: string;
+  mode?: string;
+  maxTables?: number;
+  maxLinks?: number;
+  forms?: boolean;
+  maxChars?: number;
 }
 
 export interface ReadTable {
@@ -231,6 +265,7 @@ export interface ActionPressParams {
   tabId?: number;
   key: string;
   modifiers?: string[];
+  snap?: boolean;
   seed?: string;
 }
 
@@ -238,6 +273,7 @@ export interface ActionPressResult {
   success: boolean;
   key: string;
   seed?: string;
+  snapshot?: SnapResult;
 }
 
 export interface ActionScrollParams {
@@ -245,6 +281,7 @@ export interface ActionScrollParams {
   direction?: "down" | "up";
   amount?: number;
   toSelector?: string;
+  snap?: boolean;
   seed?: string;
 }
 
@@ -255,6 +292,7 @@ export interface ActionScrollResult {
   target?: string;
   frame?: string;
   seed?: string;
+  snapshot?: SnapResult;
 }
 
 export interface ActionUploadParams {

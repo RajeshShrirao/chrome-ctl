@@ -41,7 +41,9 @@ interface IndexerGlobal {
   __chromeCtlIdentityDocId?: string;
 }
 
-const scope = window as unknown as Window & IndexerGlobal;
+function getScope(): Window & IndexerGlobal {
+  return (typeof window !== "undefined" ? window : globalThis) as unknown as Window & IndexerGlobal;
+}
 
 /** UUID when available; the fallback still differs per document instance. */
 function randomDocId(): string {
@@ -57,6 +59,7 @@ function docState(): {
   nextId: number;
   snapshotId: number;
 } {
+  const scope = getScope();
   if (typeof scope.__chromeCtlDocId !== "string" || scope.__chromeCtlDocId === "") {
     scope.__chromeCtlDocId = randomDocId();
   }
@@ -159,6 +162,7 @@ function describeSnap(request: ContentRequest & { type: "snap" }): SnapPayload {
     index.set(id, el);
   }
 
+  const scope = getScope();
   scope.__chromeCtlIdentity = applied.state;
   // Allocate above the highest exposed id so culled elements keep theirs and
   // discarded minted ids (from reused slots) can be recycled safely.
@@ -185,6 +189,7 @@ function describeSnap(request: ContentRequest & { type: "snap" }): SnapPayload {
 
 /** Identity is per document; a navigation resets every id and fingerprint. */
 function identityState(docId: string): IdentityState {
+  const scope = getScope();
   if (scope.__chromeCtlIdentity === undefined || scope.__chromeCtlIdentityDocId !== docId) {
     scope.__chromeCtlIdentity = emptyIdentity();
     scope.__chromeCtlIdentityDocId = docId;
@@ -192,23 +197,30 @@ function identityState(docId: string): IdentityState {
   return scope.__chromeCtlIdentity;
 }
 
-function readTarget(request: ContentRequest & { type: "read" }): Element {
+function readTarget(request: ContentRequest & { type: "read" }, doc: Document): Element {
   if (typeof request.id === "number") {
     assertDoc(request.expectedDocId);
   }
   return resolveReadElement(
-    document,
-    scope.__chromeCtlIndex,
+    doc,
+    getScope().__chromeCtlIndex,
     request.id,
     request.selector,
   );
 }
 
-function describeRead(request: ContentRequest & { type: "read" }): ContentResponse {
-  const target = readTarget(request);
+export function describeRead(
+  request: ContentRequest & { type: "read" },
+  doc: Document = document,
+): ContentResponse {
+  const target = readTarget(request, doc);
+  const maxChars =
+    typeof request.maxChars === "number" && Number.isFinite(request.maxChars)
+      ? Math.max(1, Math.min(READ_MAX_CHARS, Math.round(request.maxChars)))
+      : READ_MAX_CHARS;
 
   if (request.mode === "tables") {
-    const extracted = extractTables(document, target, request.maxTables);
+    const extracted = extractTables(doc, target, request.maxTables, maxChars);
     return {
       ok: true,
       type: "read",
@@ -218,7 +230,7 @@ function describeRead(request: ContentRequest & { type: "read" }): ContentRespon
     };
   }
   if (request.mode === "links") {
-    const extracted = extractLinks(document, target, request.maxLinks);
+    const extracted = extractLinks(doc, target, request.maxLinks);
     return {
       ok: true,
       type: "read",
@@ -228,14 +240,18 @@ function describeRead(request: ContentRequest & { type: "read" }): ContentRespon
     };
   }
 
+  const rawMarkdown = extractMarkdown(doc, target);
+  const truncated = rawMarkdown.length > maxChars;
   return {
     ok: true,
     type: "read",
-    markdown: truncateMarkdown(extractMarkdown(document, target), READ_MAX_CHARS),
+    markdown: truncateMarkdown(rawMarkdown, maxChars),
+    ...(truncated ? { truncated: true } : {}),
   };
 }
 
 function indexMap(): Map<number, Element> {
+  const scope = getScope();
   if (!scope.__chromeCtlIndex) {
     scope.__chromeCtlIndex = new Map<number, Element>();
   }
@@ -243,7 +259,7 @@ function indexMap(): Map<number, Element> {
 }
 
 function describeIndexedElement(id: number): MacroTarget {
-  const element = scope.__chromeCtlIndex?.get(id);
+  const element = getScope().__chromeCtlIndex?.get(id);
   if (!element || !element.isConnected) {
     throw new Error(`element [${id}] not found in the current snapshot`);
   }
@@ -261,7 +277,7 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
     case "target": {
       assertDoc(request.expectedDocId);
       const state = docState();
-      const target = resolveTargetByQuery(document, scope.__chromeCtlIndex, {
+      const target = resolveTargetByQuery(document, getScope().__chromeCtlIndex, {
         id: request.id,
         selector: request.selector,
         text: request.text,
@@ -274,7 +290,7 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
     }
     case "focus":
       assertDoc(request.expectedDocId);
-      focusIndexedElement(document, scope.__chromeCtlIndex, request.id);
+      focusIndexedElement(document, getScope().__chromeCtlIndex, request.id);
       return { ok: true, type: "focus" };
     case "metrics":
       return { ok: true, type: "metrics", metrics: buildMetricsPayload(document) };
@@ -282,12 +298,12 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
       return {
         ok: true,
         type: "state",
-        entries: buildStateEntries(document, scope.__chromeCtlIndex),
+        entries: buildStateEntries(document, getScope().__chromeCtlIndex),
       };
     case "value": {
       assertDoc(request.expectedDocId);
       const state = docState();
-      const value = readIndexedValue(document, scope.__chromeCtlIndex, request.id);
+      const value = readIndexedValue(document, getScope().__chromeCtlIndex, request.id);
       return {
         ok: true,
         type: "value",
@@ -310,7 +326,7 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
         assertDoc(request.expectedDocId);
       }
       const state = docState();
-      const attr = buildAttrPayload(document, scope.__chromeCtlIndex, {
+      const attr = buildAttrPayload(document, getScope().__chromeCtlIndex, {
         id: request.id,
         selector: request.selector,
         frame: request.frame,
@@ -354,7 +370,7 @@ async function handleRequest(request: ContentRequest): Promise<ContentResponse> 
         controls: extractFormState(document),
       };
     case "consequence": {
-      const consequence = checkConsequence(document, scope.__chromeCtlIndex, {
+      const consequence = checkConsequence(document, getScope().__chromeCtlIndex, {
         id: request.id,
         initialUrl: request.initialUrl,
         beforeChecked: request.beforeChecked,
@@ -387,10 +403,17 @@ function install(): void {
 }
 
 // Idempotent: executeScript may run this bundle again in an already-indexed tab.
-if (!scope.__chromeCtlIndexerInstalled) {
-  scope.__chromeCtlIndexerInstalled = true;
-  if (!scope.__chromeCtlIndex) {
-    scope.__chromeCtlIndex = new Map<number, Element>();
+if (
+  typeof window !== "undefined" &&
+  typeof chrome !== "undefined" &&
+  chrome.runtime?.onMessage
+) {
+  const scope = getScope();
+  if (!scope.__chromeCtlIndexerInstalled) {
+    scope.__chromeCtlIndexerInstalled = true;
+    if (!scope.__chromeCtlIndex) {
+      scope.__chromeCtlIndex = new Map<number, Element>();
+    }
+    install();
   }
-  install();
 }
