@@ -157,6 +157,24 @@ export function summarizeRpc(method: string, params: Record<string, unknown>): s
         : typeof params.auto === "string" && params.auto !== ""
           ? `auto=${params.auto}`
           : "status";
+    case "page.console":
+      return params.clear === true ? "clear" : params.errorsOnly === true ? "--errors" : "log";
+    case "page.storage":
+      return `${params.area === "session" ? "session" : "local"} ${typeof params.action === "string" ? params.action : "list"}`;
+    case "page.cookies":
+      return typeof params.action === "string" ? params.action : "list";
+    case "tab.close":
+      return typeof params.tabId === "number" ? `tab [${params.tabId}]` : "close";
+    case "action.hover":
+      return typeof params.id === "number" && params.id > 0
+        ? `[${params.id}]`
+        : typeof params.text === "string"
+          ? `"${truncate(params.text, 24)}"`
+          : "hover";
+    case "action.drag":
+      return `[${String(params.fromId ?? "")}] -> [${String(params.toId ?? "")}]`;
+    case "action.select":
+      return `[${String(params.id ?? "")}] "${truncate(String(params.value ?? ""), 24)}"`;
     default:
       return "";
   }

@@ -87,6 +87,11 @@ export interface TabSwitchResult {
   activeTabId: number;
 }
 
+export interface TabCloseResult {
+  success: boolean;
+  tabId: number;
+}
+
 export interface WindowInfo {
   windowId: number;
   focused: boolean;
@@ -305,6 +310,33 @@ export interface ActionUploadResult {
   success: boolean;
   fileName: string;
   fileSize: number;
+}
+
+export interface ActionHoverResult {
+  success: boolean;
+  target?: ActionTarget;
+  coordinates?: ActionCoordinates;
+  durationMs: number;
+  seed?: string;
+  snapshot?: SnapResult;
+}
+
+export interface ActionDragResult {
+  success: boolean;
+  from?: ActionTarget;
+  to?: ActionTarget;
+  durationMs: number;
+  seed?: string;
+  snapshot?: SnapResult;
+}
+
+export interface ActionSelectResult {
+  success: boolean;
+  id: number;
+  value: string;
+  label?: string;
+  verified: boolean;
+  snapshot?: SnapResult;
 }
 
 export interface PageWaitParams {
@@ -528,4 +560,52 @@ export interface PageDialogResult {
   handled?: boolean;
   action?: string;
   auto?: string;
+}
+
+export interface ConsoleEntry {
+  level: string;
+  text: string;
+  source?: string;
+  url?: string;
+  line?: number;
+  timestamp: number;
+}
+
+export interface PageConsoleResult {
+  entries: ConsoleEntry[];
+  enabledAt?: number;
+  note?: string;
+}
+
+export interface StorageItem {
+  key: string;
+  value: string;
+  truncated?: boolean;
+}
+
+export interface PageStorageResult {
+  area: string;
+  action: string;
+  items?: StorageItem[];
+  item?: StorageItem;
+  found?: boolean;
+  cleared?: number;
+}
+
+export interface CookieItem {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: string;
+  expires?: number;
+  redacted?: boolean;
+}
+
+export interface PageCookiesResult {
+  action: string;
+  cookies?: CookieItem[];
+  success?: boolean;
 }

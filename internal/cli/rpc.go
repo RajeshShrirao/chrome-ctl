@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/client"
@@ -32,6 +33,41 @@ func callRPC(cmd *cobra.Command, method string, params, out any) error {
 
 // callRPCWithTimeout performs one request with an explicit timeout and decodes
 // its result into out.
+func isTabScopedMethod(method string) bool {
+	return strings.HasPrefix(method, "page.") ||
+		strings.HasPrefix(method, "action.") ||
+		method == protocol.MethodMediaCapture ||
+		method == protocol.MethodTabOpen
+}
+
+func withGlobalTabID(cmd *cobra.Command, method string, params any) any {
+	if cmd == nil || !isTabScopedMethod(method) {
+		return params
+	}
+	tabID, err := cmd.Flags().GetInt("tab")
+	if err != nil || tabID <= 0 {
+		return params
+	}
+	if params == nil {
+		return map[string]any{"tabId": tabID}
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return params
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return params
+	}
+	if obj == nil {
+		obj = map[string]any{}
+	}
+	if _, exists := obj["tabId"]; !exists {
+		obj["tabId"] = tabID
+	}
+	return obj
+}
+
 func callRPCWithTimeout(cmd *cobra.Command, method string, params, out any, timeout time.Duration) error {
 	c, err := newRPCClient()
 	if err != nil {
@@ -41,6 +77,7 @@ func callRPCWithTimeout(cmd *cobra.Command, method string, params, out any, time
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
 
+	params = withGlobalTabID(cmd, method, params)
 	raw, rpcErr, err := c.Call(ctx, method, params)
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)

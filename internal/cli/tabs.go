@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
@@ -12,7 +13,7 @@ func newTabsCmd() *cobra.Command {
 	var windowID int
 	cmd := &cobra.Command{
 		Use:   "tabs",
-		Short: "List open tabs",
+		Short: "List or close open tabs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var params any
@@ -28,7 +29,28 @@ func newTabsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&windowID, "window", 0, "List tabs in a specific window instead of the automation window")
+	cmd.AddCommand(newTabsCloseCmd())
 	return cmd
+}
+
+func newTabsCloseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "close <tab_id>",
+		Short: "Close a specific tab by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tabID, err := strconv.Atoi(strings.TrimSpace(args[0]))
+			if err != nil || tabID <= 0 {
+				return fmt.Errorf("invalid tab_id %q: must be a positive integer", args[0])
+			}
+			var result protocol.TabCloseResult
+			if err := callRPC(cmd, protocol.MethodTabClose, protocol.TabCloseParams{TabID: tabID}, &result); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "OK: closed tab [%d]\n", result.TabID)
+			return nil
+		},
+	}
 }
 
 func formatTabs(tabs []protocol.TabInfo) string {

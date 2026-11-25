@@ -25,6 +25,7 @@ export const Methods = {
   tabList: "tab.list",
   tabOpen: "tab.open",
   tabSwitch: "tab.switch",
+  tabClose: "tab.close",
   pageSnap: "page.snap",
   pageRead: "page.read",
   pageWait: "page.wait",
@@ -35,12 +36,18 @@ export const Methods = {
   pageNetBlock: "page.net_block",
   pageDownloads: "page.downloads",
   pageDialog: "page.dialog",
+  pageConsole: "page.console",
+  pageStorage: "page.storage",
+  pageCookies: "page.cookies",
   pageFormState: "page.formstate",
   actionClick: "action.click",
   actionType: "action.type",
   actionPress: "action.press",
   actionScroll: "action.scroll",
   actionUpload: "action.upload",
+  actionHover: "action.hover",
+  actionDrag: "action.drag",
+  actionSelect: "action.select",
   mediaShot: "media.shot",
   mediaRecStart: "media.rec_start",
   mediaRecStop: "media.rec_stop",
@@ -83,6 +90,9 @@ export function rpcTimeoutMs(method: string): number {
     case Methods.actionClick:
     case Methods.actionScroll:
     case Methods.actionUpload:
+    case Methods.actionHover:
+    case Methods.actionDrag:
+    case Methods.actionSelect:
       return 60000;
     case Methods.actionPress:
       return 20000;

@@ -39,6 +39,7 @@ func isMutating(method string) bool {
 	switch method {
 	case protocol.MethodTabOpen,
 		protocol.MethodTabSwitch,
+		protocol.MethodTabClose,
 		protocol.MethodWindowCreate,
 		protocol.MethodWindowEnsure,
 		protocol.MethodWindowUse,
@@ -65,6 +66,7 @@ func isMutating(method string) bool {
 		protocol.MethodPageNet,
 		protocol.MethodPageNetBody,
 		protocol.MethodPageDownloads,
+		protocol.MethodPageConsole,
 		protocol.MethodPageFormState,
 		protocol.MethodPageDescribe,
 		protocol.MethodPageResolve,

@@ -19,8 +19,11 @@ import type {
 import { ErrorCodes } from "../shared/protocol.js";
 import type {
   ActionClickResult,
+  ActionDragResult,
+  ActionHoverResult,
   ActionPressResult,
   ActionScrollResult,
+  ActionSelectResult,
   ActionTypeResult,
   ActionUploadResult,
 } from "../shared/protocol.js";
@@ -847,6 +850,177 @@ export async function upload(
       success: true,
       fileName: baseName(options.filePath),
       fileSize: 0,
+    };
+  });
+}
+
+export async function hover(
+  tabId: number,
+  query: TargetQuery | number,
+  options: { seed?: string; sendContent: ContentSender },
+): Promise<ActionHoverResult> {
+  return run(async () => {
+    const startedAt = Date.now();
+    const rng = createRng(options.seed);
+    const target = await requestTarget(options.sendContent, tabId, query);
+    const targetId = target.id ?? (typeof query === "number" ? query : 0);
+    requireInteractable(target, targetId);
+
+    const rect: ClickRect = {
+      left: target.x,
+      top: target.y,
+      width: target.w,
+      height: target.h,
+    };
+    const landing = clickLanding(rect, rng);
+    const x = Math.round(landing.x);
+    const y = Math.round(landing.y);
+    const start: Point2D = lastPointer.get(tabId) ?? { x, y };
+
+    const path = planMousePath(start, { x, y }, Math.max(rect.width, 1), rng);
+    if (Math.hypot(x - start.x, y - start.y) >= 1) {
+      for (const point of path.points) {
+        await debuggerController.send(
+          tabId,
+          "Input.dispatchMouseEvent",
+          mouseEventParams("mouseMoved", point.x, point.y),
+        );
+        if (point.delayMs > 0) {
+          await sleep(point.delayMs);
+        }
+      }
+    } else {
+      await debuggerController.send(
+        tabId,
+        "Input.dispatchMouseEvent",
+        mouseEventParams("mouseMoved", x, y),
+      );
+    }
+
+    lastPointer.set(tabId, { x, y });
+    await sleep(30);
+
+    return {
+      success: true,
+      target: { id: targetId, tag: target.tag, label: target.label },
+      coordinates: { x, y },
+      durationMs: Date.now() - startedAt,
+      seed: rng.seed(),
+    };
+  });
+}
+
+export async function drag(
+  tabId: number,
+  fromId: number,
+  toId: number,
+  options: { seed?: string; sendContent: ContentSender },
+): Promise<ActionDragResult> {
+  return run(async () => {
+    const startedAt = Date.now();
+    const rng = createRng(options.seed);
+    const src = await requestTarget(options.sendContent, tabId, fromId);
+    requireInteractable(src, fromId);
+    const dst = await requestTarget(options.sendContent, tabId, toId);
+    requireInteractable(dst, toId);
+
+    const fromPt = { x: Math.round(src.x + src.w / 2), y: Math.round(src.y + src.h / 2) };
+    const toPt = { x: Math.round(dst.x + dst.w / 2), y: Math.round(dst.y + dst.h / 2) };
+
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mouseMoved", fromPt.x, fromPt.y),
+    );
+    await sleep(randomInt(20, 40, rng));
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mousePressed", fromPt.x, fromPt.y, { button: "left", buttons: 1, clickCount: 1 }),
+    );
+    await sleep(randomInt(40, 80, rng));
+
+    const path = planMousePath(fromPt, toPt, Math.max(dst.w, 1), rng);
+    for (const point of path.points) {
+      await debuggerController.send(
+        tabId,
+        "Input.dispatchMouseEvent",
+        mouseEventParams("mouseMoved", point.x, point.y, { button: "left", buttons: 1 }),
+      );
+      if (point.delayMs > 0) {
+        await sleep(point.delayMs);
+      }
+    }
+
+    await sleep(randomInt(25, 50, rng));
+    await debuggerController.send(
+      tabId,
+      "Input.dispatchMouseEvent",
+      mouseEventParams("mouseReleased", toPt.x, toPt.y, { button: "left", buttons: 0, clickCount: 1 }),
+    );
+    lastPointer.set(tabId, toPt);
+    await sleep(30);
+
+    return {
+      success: true,
+      from: { id: fromId, tag: src.tag, label: src.label },
+      to: { id: toId, tag: dst.tag, label: dst.label },
+      durationMs: Date.now() - startedAt,
+      seed: rng.seed(),
+    };
+  });
+}
+
+export async function selectOption(
+  tabId: number,
+  id: number,
+  value: string,
+  options: { sendContent: ContentSender },
+): Promise<ActionSelectResult> {
+  return run(async () => {
+    const target = await requestTarget(options.sendContent, tabId, id);
+    if (target.tag.toLowerCase() !== "select") {
+      throw new RpcFault(ErrorCodes.elementNotInteractable, `element [${id}] is <${target.tag}>, not <select>`);
+    }
+    const script = `(() => {
+      const el = document.querySelector(${JSON.stringify(target.cssPath)});
+      if (!el || el.tagName !== "SELECT") return { ok: false, error: "select element not found" };
+      const want = ${JSON.stringify(value)};
+      const lower = want.toLowerCase();
+      const opts = Array.from(el.options);
+      const match =
+        opts.find((o) => o.value === want) ||
+        opts.find((o) => (o.textContent || "").trim() === want) ||
+        opts.find((o) => (o.textContent || "").trim().toLowerCase() === lower);
+      if (!match) return { ok: false, error: "no option matched " + JSON.stringify(want) };
+      el.value = match.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      const selected = el.options[el.selectedIndex];
+      return {
+        ok: true,
+        value: el.value,
+        label: selected ? (selected.textContent || "").trim() : "",
+        verified: el.value === match.value,
+      };
+    })()`;
+    const evalRes = await debuggerController.send<EvaluateResult>(tabId, "Runtime.evaluate", {
+      expression: script,
+      returnByValue: true,
+      userGesture: true,
+    });
+    const out = evalRes?.result?.value as
+      | { ok?: boolean; error?: string; value?: string; label?: string; verified?: boolean }
+      | undefined;
+    if (!out || out.ok !== true) {
+      throw new RpcFault(ErrorCodes.elementNotFound, out?.error ?? "failed to select option");
+    }
+    return {
+      success: true,
+      id,
+      value: out.value ?? value,
+      ...(out.label ? { label: out.label } : {}),
+      verified: out.verified === true,
     };
   });
 }

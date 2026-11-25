@@ -22,6 +22,7 @@ const (
 	MethodTabList       = "tab.list"
 	MethodTabOpen       = "tab.open"
 	MethodTabSwitch     = "tab.switch"
+	MethodTabClose      = "tab.close"
 	MethodPageSnap      = "page.snap"
 	MethodPageRead      = "page.read"
 	MethodPageWait      = "page.wait"
@@ -32,12 +33,18 @@ const (
 	MethodPageNetBlock  = "page.net_block"
 	MethodPageDownloads = "page.downloads"
 	MethodPageDialog    = "page.dialog"
+	MethodPageConsole   = "page.console"
+	MethodPageStorage   = "page.storage"
+	MethodPageCookies   = "page.cookies"
 	MethodPageFormState = "page.formstate"
 	MethodActionClick   = "action.click"
 	MethodActionType    = "action.type"
 	MethodActionPress   = "action.press"
 	MethodActionScroll  = "action.scroll"
 	MethodActionUpload  = "action.upload"
+	MethodActionHover   = "action.hover"
+	MethodActionDrag    = "action.drag"
+	MethodActionSelect  = "action.select"
 	MethodMediaShot     = "media.shot"
 	MethodMediaRecStart = "media.rec_start"
 	MethodMediaRecStop  = "media.rec_stop"
@@ -100,6 +107,9 @@ var methodTimeouts = map[string]time.Duration{
 	"action.click":   ActionMediumTimeout,
 	"action.scroll":  ActionMediumTimeout,
 	"action.upload":  ActionMediumTimeout,
+	"action.hover":   ActionMediumTimeout,
+	"action.drag":    ActionMediumTimeout,
+	"action.select":  ActionMediumTimeout,
 	"action.press":   ActionPressTimeout,
 	"page.wait":      PageWaitTimeout,
 	"page.downloads": PageDownloadTimeout,

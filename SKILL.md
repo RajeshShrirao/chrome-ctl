@@ -12,7 +12,7 @@ description: Drive the user's authenticated Chrome from the CLI: plan, operate, 
 1. **Snapshot first, never HTML.** `snap` returns a compact map of interactive elements (`[1]`, `[2]`). Never request raw HTML or paste a DOM into the conversation.
 2. **IDs die with the document.** Navigation, reload, or a new tab resets IDs and never reuses them. Act only on IDs from the latest snapshot.
 3. **Exit 0 is not proof.** It means input was dispatched, not accepted. Verify against the output text — see [Verify](#verify).
-4. **Secrets and humans are hand-back points.** Passwords, one-time codes, CAPTCHA, 2FA, passkeys, wallets, downloads, and anything destructive or spendable stop the run — see [Stop and ask](#stop-and-ask).
+4. **Secrets and humans are hand-back points.** Passwords, one-time codes, CAPTCHA, 2FA, passkeys, wallets, and anything destructive or spendable stop the run — see [Stop and ask](#stop-and-ask).
 
 ## Task lifecycle
 
@@ -66,9 +66,21 @@ chrome-ctl click 5 --snap                                    # click + compact D
 chrome-ctl type 3 "Hello" --enter --snap                     # human cadence + read-back verification + DIFF
 chrome-ctl press Enter --snap                                # key press + compact DIFF
 chrome-ctl scroll down --snap                                # scroll + compact DIFF (or scroll --to "<sel>")
-chrome-ctl wait --network                                    # wait until requests settle (or --for-text "...")
+chrome-ctl wait --network                                    # wait until requests settle (or --for-text "..." / --download)
 chrome-ctl read --max-chars 4000                             # bounded markdown (--full removes cap)
 chrome-ctl formstate --filled                                # populated/checked controls (--full removes cap)
+chrome-ctl hover <id|text|css=sel> --snap                    # humanized hover without clicking
+chrome-ctl drag <from_id> <to_id> --snap                     # humanized drag-and-drop
+chrome-ctl select <id> <value_or_label> --snap               # native <select> by value or visible label
+chrome-ctl net --ids --xhr                                   # list XHR/Fetch requests with requestId
+chrome-ctl net body <req_id>                                 # fetch buffered JSON/response body (-o <file>)
+chrome-ctl net block --media                                 # block images/fonts/video (--clear to reset)
+chrome-ctl console --errors                                  # CDP console errors & uncaught exceptions
+chrome-ctl storage [get|set|del|clear] [--session]           # inspect/edit localStorage or sessionStorage
+chrome-ctl cookies [list|set|del] [--show-values]            # CDP cookies (values redacted by default)
+chrome-ctl downloads                                         # list recent Chrome downloads (pair with wait --download)
+chrome-ctl dialog --accept|--dismiss [--auto dismiss]        # handle JS alert/confirm/prompt dialogs
+chrome-ctl --tab <id> <cmd>                                  # target a specific tab without switching focus (tabs close <id>)
 ```
 
 - **1-shot clicks & consequence receipts:** `click "Text"` and `click "css=#sel"` resolve in-page without a prior `snap`. Inline receipts (`-> selected (•)`, `-> opened dialog "Delete"`, `-> navigated to ...`) confirm simple consequences without another `snap`.
@@ -85,7 +97,9 @@ Only exit codes `0` and `1` exist. Failures print `Error: <text>` to stderr — 
 | `type` | `OK: Typed N chars into [id] (verified; …).` | Site accepted value on submit (no `verified` = treat as unverified). |
 | `type` | `WARN: Typed N chars … reads empty` / `reads "…"` | Rejected (readonly/controlled) or wrong target; exit code is still 0. |
 | `click` | `OK: clicked [id] <tag> "…" @x,y -> <consequence>` | Hit coords and immediate consequence; skip `snap` if consequence confirms mutation. |
-| `wait` | `OK: network quiet after …` / `text "…" appeared` / `idle after …` | Any `WARN: … State unknown.` is a timeout, never proof of static state. |
+| `select` | `OK: selected [id] "…" (value="…", verified)` | Native `<select>` changed and read back; still verify form submit. |
+| `wait` | `OK: network quiet after …` / `text "…" appeared` / `downloaded <path> (N bytes, …)` | Any `WARN: … State unknown.` is a timeout, never proof of static state. |
+| `dialog` | `OK: dialog accepted/dismissed (auto=…)` | Active JS alert/confirm/prompt cleared; re-`snap` if DOM changed. |
 | `open` | `OK: navigated [id] <title> - <url>` | Check for redirect or `(still loading)` when `--wait` was omitted. |
 | `snap` | Higher `SNAP <n>` counter than last time | Only re-observes; proves nothing about the prior action. |
 | `batch` | `[1/N] OK: …` for each step | Stops on first error with fresh `snap` on stderr; never auto-retries. |
@@ -125,7 +139,7 @@ Not errors: `OMITTED: <n> candidates`, `net` empty-log note (`collected only whi
 
 ## Stop and ask
 
-Hand back when you observe: (1) a `type=password` field or password/passphrase/API-key/card/OTP input; (2) `SSO aborted: password required…`, CAPTCHA, passkey, 2FA, or wallet; (3) Delete, Purchase, Pay, Post, Send, Grant access, submitting a graded test/quiz, or anything spendable/irreversible; (4) a download control (this build cannot verify downloads landed); (5) data about to leave to a third party or out-of-scope exfiltration.
+Hand back when you observe: (1) a `type=password` field or password/passphrase/API-key/card/OTP input; (2) `SSO aborted: password required…`, CAPTCHA, passkey, 2FA, or wallet; (3) Delete, Purchase, Pay, Post, Send, Grant access, submitting a graded test/quiz, or anything spendable/irreversible; (4) data about to leave to a third party or out-of-scope exfiltration. (Downloads can be verified via `wait --download` and `downloads`; click a download control at most once before waiting.)
 
 Sequence — five steps, no improvisation:
 
@@ -135,7 +149,7 @@ Sequence — five steps, no improvisation:
 4. **Ask once**, with: the one-line goal, current `url` and tab/window IDs from `SNAP`, literal evidence line, the single action needed, and "I will not proceed until you confirm."
 5. **Re-`snap`** after they confirm — manual work invalidates every held ID.
 
-The CLI has **no approval gate, no `--confirm`, no `--dry-run`, and no pause** (`sso` refuses credentials; `--no-eval` disables script exec). Click a download control at most once, then ask. Never invent, guess, or paste a secret, or put one in a URL/query string.
+The CLI has **no `--confirm` or `--dry-run` approval gate** (`sso` refuses credentials; `--no-eval` disables script exec; the user can pause/resume queued RPCs live from the extension Side Panel or Popup). Never invent, guess, or paste a secret, or put one in a URL/query string.
 
 ## Reference docs
 
@@ -143,6 +157,6 @@ Read on demand when a task uses these capabilities:
 
 | Reference | Covers |
 | :--- | :--- |
-| [references/forms-and-frames.md](references/forms-and-frames.md) | `formstate` (`--frame`, `--filled`, `--max-controls`, `--full`), nested iframes, `clickat --from-shot`, JS/React/Vue controlled inputs, `describe`, `href`, `eval` escape hatch. |
-| [references/bulk-and-macros.md](references/bulk-and-macros.md) | `batch`, `bulk` flags/resume/circuit breakers, `macro` recording/params/replay/sagas, [Resume](references/bulk-and-macros.md#resume) recipes, `tasks/*.journal.jsonl` convention. |
-| [references/visuals-and-sso.md](references/visuals-and-sso.md) | `shot` (`--som`, `--gray`, `--max-width`, `--exact`, `--full`), `rec` (`--grid`, WebM), `sso`, `net`, windows/waits, Site Etiquette & Web Pitfalls, [Output contract & defaults](references/visuals-and-sso.md#output-contract-and-defaults). |
+| [references/forms-and-frames.md](references/forms-and-frames.md) | `formstate`, `hover`, `drag`, `select`, `dialog`, nested iframes, `clickat --from-shot`, controlled inputs, `describe`, `href`, `eval`. |
+| [references/bulk-and-macros.md](references/bulk-and-macros.md) | `batch`, `bulk` (`--block-media`, `--concurrency`, `--resume`, circuit breakers), `macro` recording/replay/sagas, [Resume](references/bulk-and-macros.md#resume) recipes. |
+| [references/visuals-and-sso.md](references/visuals-and-sso.md) | `shot`, `rec`, `sso`, `net` (`--ids`, `body`, `block`), `console`, `storage`, `cookies`, `downloads`, `--tab` / `tabs close`, windows/waits, [Output contract & defaults](references/visuals-and-sso.md#output-contract-and-defaults). |

@@ -31,6 +31,7 @@ func NewRoot() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.PersistentFlags().Int("tab", 0, "Target a specific tab ID instead of the active automation tab")
 	root.AddCommand(
 		newVersionCmd(),
 		newStatusCmd(),
@@ -44,12 +45,18 @@ func NewRoot() *cobra.Command {
 		newReadCmd(),
 		newClickCmd(),
 		newClickAtCmd(),
+		newHoverCmd(),
+		newDragCmd(),
+		newSelectCmd(),
 		newTypeCmd(),
 		newPressCmd(),
 		newScrollCmd(),
 		newUploadCmd(),
 		newWaitCmd(),
 		newNetCmd(),
+		newConsoleCmd(),
+		newStorageCmd(),
+		newCookiesCmd(),
 		newDownloadsCmd(),
 		newDialogCmd(),
 		newBulkCmd(),

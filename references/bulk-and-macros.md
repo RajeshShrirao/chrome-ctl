@@ -25,6 +25,7 @@ chrome-ctl bulk urls.txt --out ./pages --wait 6000-9000
 chrome-ctl bulk queries.txt --template 'https://www.bing.com/search?q={{item}}' --out ./serp
 chrome-ctl bulk - --out ./pages --resume < urls.txt
 chrome-ctl bulk urls.txt --out ./pages --limit 20 --min-bytes 500 --stop-on-empty
+chrome-ctl bulk urls.txt --out ./pages --concurrency 4 --block-media
 ```
 
 - **Input list (`<file|->`):** One item per line; blank lines and `#` comments are ignored; `-` reads stdin. `--template` URL-escapes each item into `{{item}}`.
@@ -36,6 +37,8 @@ chrome-ctl bulk urls.txt --out ./pages --limit 20 --min-bytes 500 --stop-on-empt
   - `--max-repeats <n>` (default `3`): stop after `n` consecutive exact (SHA-256) or near-duplicate (64-bit word-3-shingle SimHash LSH, Hamming distance ≤ 3) pages — catches rate-limit templates and login walls that vary slightly.
   - `--resume` (default `false`): skip URLs already marked `ok: true` in `<out>/manifest.jsonl`.
   - `--network` (default `true`): wait for network quiet (15s timeout, falls back to 10s DOM idle); `--network=false` skips directly to DOM-idle waiting.
+  - `--block-media` (default `false`): blocks images, fonts, and video/audio via CDP `Network.setBlockedURLs` for the duration of the run, clearing automatically on exit.
+  - `--concurrency <1-8>` (default `1`): opens up to `N` parallel background worker tabs inside the automation window (sharing per-host pacing/circuit breakers and mutex-guarded manifest writes) and closes worker tabs on exit.
   - `--quiet` (default `false`): suppress per-item progress on stderr.
 - **Per-host pacing, retries, and circuit breakers:**
   - **AIMD pacing:** Per-host rate controller starts/caps at `4.0` req/s (min `0.1` req/s), adds `+0.25` on success, and halves (`×0.5`) on failure.

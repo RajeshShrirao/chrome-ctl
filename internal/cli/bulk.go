@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/bulk"
@@ -58,6 +59,7 @@ type bulkFlags struct {
 	quiet       bool
 	networkWait bool
 	blockMedia  bool
+	concurrency int
 }
 
 type bulkManifestEntry struct {
@@ -96,6 +98,7 @@ func newBulkCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.quiet, "quiet", false, "Suppress per-item progress on stderr")
 	cmd.Flags().BoolVar(&flags.networkWait, "network", true, "Wait for network quiet after each navigation")
 	cmd.Flags().BoolVar(&flags.blockMedia, "block-media", false, "Block images, fonts, and video via CDP during bulk run")
+	cmd.Flags().IntVar(&flags.concurrency, "concurrency", 1, "Number of parallel background tabs to scrape with (1-8)")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd
 }
@@ -112,6 +115,9 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 	}
 	if flags.maxRepeats < 1 {
 		return fmt.Errorf("invalid --max-repeats %d: must be at least 1", flags.maxRepeats)
+	}
+	if flags.concurrency < 1 || flags.concurrency > 8 {
+		return fmt.Errorf("invalid --concurrency %d: must be between 1 and 8", flags.concurrency)
 	}
 
 	waitSpec, err := parseWaitArg(flags.wait)
@@ -170,6 +176,10 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 	})
 	retryPolicy := bulk.RetryPolicy{Max: bulkRetryMax, Base: bulkRetryBase, Cap: bulkRetryCap}
 	nearDuplicates := bulk.NewNearDuplicates(bulkNearDupDistance)
+
+	if flags.concurrency > 1 {
+		return runBulkConcurrent(cmd, items, flags, &window, done, manifest, manifestPath, scheduler, retryPolicy, nearDuplicates, waitSpec)
+	}
 
 	scraped, failed, skipped := 0, 0, 0
 	stopReason := ""
@@ -293,6 +303,237 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 		return fmt.Errorf("%d of %d items failed; see %s", failed, len(items), manifestPath)
 	}
 	return nil
+}
+
+type bulkJob struct {
+	index  int
+	target string
+}
+
+func runBulkConcurrent(
+	cmd *cobra.Command,
+	items []string,
+	flags bulkFlags,
+	window *protocol.WindowResult,
+	done map[string]bool,
+	manifest *os.File,
+	manifestPath string,
+	scheduler *bulk.Scheduler,
+	retryPolicy bulk.RetryPolicy,
+	nearDuplicates *bulk.NearDuplicates,
+	waitSpec waitSpec,
+) error {
+	stdout := cmd.OutOrStdout()
+	stderr := cmd.ErrOrStderr()
+
+	jobs := make([]bulkJob, 0, len(items))
+	skipped := 0
+	for pos, item := range items {
+		idx := pos + 1
+		if flags.limit > 0 && idx > flags.limit {
+			break
+		}
+		target := bulkTargetURL(item, flags.template)
+		if flags.resume && done[target] {
+			skipped++
+			continue
+		}
+		jobs = append(jobs, bulkJob{index: idx, target: target})
+	}
+
+	jobCh := make(chan bulkJob, len(jobs))
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+
+	var mu sync.Mutex
+	scraped, failed := 0, 0
+	stopReason := ""
+	repeats := 0
+	lastHash := ""
+	workerTabs := make([]int, 0, flags.concurrency)
+
+	defer func() {
+		for _, tid := range workerTabs {
+			var closed protocol.TabCloseResult
+			_ = callRPC(cmd, protocol.MethodTabClose, protocol.TabCloseParams{TabID: tid}, &closed)
+		}
+	}()
+
+	workers := flags.concurrency
+	if workers > len(jobs) && len(jobs) > 0 {
+		workers = len(jobs)
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var tabID int
+			for job := range jobCh {
+				mu.Lock()
+				stopped := stopReason != ""
+				mu.Unlock()
+				if stopped || cmd.Context().Err() != nil {
+					return
+				}
+
+				started := time.Now()
+				entry := bulkManifestEntry{Index: job.index, URL: job.target}
+				host := bulkHost(job.target)
+				var itemErr error
+
+				for attempt := 0; attempt <= bulkRetryMax; attempt++ {
+					mu.Lock()
+					admitted, waitErr := admitBulk(cmd, scheduler, host)
+					mu.Unlock()
+					if waitErr != nil {
+						return
+					}
+					if !admitted {
+						itemErr = fmt.Errorf("circuit open for %s after %d consecutive failures", host, bulkBreakerThreshold)
+						break
+					}
+
+					var usedTab int
+					entry.File, entry.Title, entry.Bytes, usedTab, itemErr = scrapeOneOnTab(cmd, window, tabID, job.target, job.index, flags, stderr)
+					if tabID == 0 && usedTab > 0 {
+						tabID = usedTab
+						mu.Lock()
+						workerTabs = append(workerTabs, tabID)
+						mu.Unlock()
+					}
+					mu.Lock()
+					scheduler.Done(host, itemErr == nil)
+					mu.Unlock()
+					if itemErr == nil || attempt == bulkRetryMax || !bulkTransient(itemErr) {
+						break
+					}
+					delay := retryPolicy.Delay(attempt, rand.Float64(), bulkRetryAfter(itemErr))
+					if sleepWithContext(cmd.Context(), delay) != nil {
+						return
+					}
+				}
+
+				entry.WaitedMs = time.Since(started).Milliseconds()
+				entry.OK = itemErr == nil
+				if itemErr != nil {
+					entry.Error = itemErr.Error()
+				}
+
+				mu.Lock()
+				if entry.OK {
+					if entry.Bytes < flags.minBytes && flags.stopOnEmpty && stopReason == "" {
+						stopReason = fmt.Sprintf("page %d was %d bytes (< %d)", job.index, entry.Bytes, flags.minBytes)
+					}
+					entry.Hash, entry.SimHash = bulkPageHashes(flags.out, entry.File)
+					near := false
+					if entry.SimHash != 0 {
+						near = nearDuplicates.Seen(entry.SimHash)
+						nearDuplicates.Add(entry.SimHash)
+					}
+					if near || (entry.Hash != "" && entry.Hash == lastHash) {
+						repeats++
+						if repeats >= flags.maxRepeats && stopReason == "" {
+							stopReason = fmt.Sprintf("%d near-duplicate pages ending at %d", repeats, job.index)
+						}
+					} else {
+						repeats = 0
+						lastHash = entry.Hash
+					}
+					scraped++
+				} else {
+					failed++
+					fmt.Fprintf(stdout, "FAIL %03d %s: %s\n", job.index, job.target, entry.Error)
+				}
+				_ = appendBulkManifest(manifest, entry)
+				if !flags.quiet && entry.OK {
+					fmt.Fprintf(stderr, "[%d/%d] %s -> %s (%d bytes, %s)\n",
+						job.index, len(items), job.target, entry.File, entry.Bytes, formatWaitDuration(int(entry.WaitedMs)))
+				}
+				mu.Unlock()
+
+				if !sleepBulk(cmd, waitSpec) {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	summary := fmt.Sprintf("OK: %d scraped, %d failed", scraped, failed)
+	if skipped > 0 {
+		summary += fmt.Sprintf(", %d skipped", skipped)
+	}
+	summary += fmt.Sprintf(" -> %s (%s)", flags.out, bulkManifestName)
+	if stopReason != "" {
+		summary += fmt.Sprintf(" [stopped: %s]", stopReason)
+	}
+	fmt.Fprintln(stdout, summary)
+	if failed > 0 {
+		return fmt.Errorf("%d of %d items failed; see %s", failed, len(items), manifestPath)
+	}
+	return nil
+}
+
+func scrapeOneOnTab(
+	cmd *cobra.Command,
+	window *protocol.WindowResult,
+	tabID int,
+	target string,
+	index int,
+	flags bulkFlags,
+	stderr io.Writer,
+) (string, string, int, int, error) {
+	openParams := protocol.TabOpenParams{URL: target, WindowID: &window.WindowID}
+	if tabID == 0 {
+		openParams.NewTab = true
+	} else {
+		t := tabID
+		openParams.TabID = &t
+	}
+	var opened protocol.TabOpenResult
+	if err := callRPCWithTimeout(cmd, protocol.MethodTabOpen, openParams, &opened, bulkTabOpenTimeout); err != nil {
+		return "", "", 0, tabID, err
+	}
+	usedTab := opened.TabID
+	if usedTab <= 0 {
+		usedTab = tabID
+	}
+	var tabPtr *int
+	if usedTab > 0 {
+		t := usedTab
+		tabPtr = &t
+	}
+	waitBulkTab(cmd, flags, tabPtr)
+
+	var read protocol.PageReadResult
+	if err := callRPC(cmd, protocol.MethodPageRead, protocol.PageReadParams{TabID: tabPtr}, &read); err != nil {
+		return "", "", 0, usedTab, err
+	}
+	filename := bulkFilename(index, target)
+	if err := writeFileAtomic(filepath.Join(flags.out, filename), []byte(read.Markdown)); err != nil {
+		return "", opened.Title, 0, usedTab, fmt.Errorf("write %s: %w", filename, err)
+	}
+	return filename, opened.Title, len(read.Markdown), usedTab, nil
+}
+
+func waitBulkTab(cmd *cobra.Command, flags bulkFlags, tabID *int) {
+	if !flags.networkWait {
+		idle := protocol.PageWaitParams{TabID: tabID, Idle: true, TimeoutMs: bulkIdleTimeoutMs}
+		var result protocol.PageWaitResult
+		_ = callRPCWithTimeout(cmd, protocol.MethodPageWait, idle, &result, waitRPCBudget)
+		return
+	}
+	params := protocol.PageWaitParams{TabID: tabID, Network: true, QuietMs: waitDefaultQuietMs, TimeoutMs: bulkNetworkTimeoutMs}
+	var result protocol.PageWaitResult
+	if err := callRPCWithTimeout(cmd, protocol.MethodPageWait, params, &result, waitRPCBudget); err == nil {
+		return
+	}
+	idle := protocol.PageWaitParams{TabID: tabID, Idle: true, TimeoutMs: bulkIdleTimeoutMs}
+	_ = callRPCWithTimeout(cmd, protocol.MethodPageWait, idle, &result, waitRPCBudget)
 }
 
 // scrapeOne navigates the automation tab, waits for the page, and writes the

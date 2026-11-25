@@ -55,6 +55,22 @@ chrome-ctl clickat 65,238 --double --snap             # double-click + compact D
 - **Hidden file inputs:** Hidden `<input type="file">` controls are emitted at their visible `<label>` with state `file`. Always use `chrome-ctl upload <id> <file_path>`; never click the hidden input directly.
 - **Keyboard fallback:** When pointer heuristics cannot reach a control, use `chrome-ctl press Tab` until focused, then `chrome-ctl press Enter` or `chrome-ctl press Space`.
 
+## Hover, drag, native `<select>`, and JS dialogs
+
+```bash
+chrome-ctl hover 12 --snap                       # move humanized pointer over [12] (or text / css=...) without clicking
+chrome-ctl drag 4 9 --snap                       # humanized mousePressed -> curved move -> mouseReleased
+chrome-ctl select 6 "United States" --snap       # match native <select> option by value or visible label + verify
+chrome-ctl dialog                                # inspect active alert/confirm/prompt and current auto mode
+chrome-ctl dialog --accept --text "confirmed"    # accept active dialog (optional prompt text)
+chrome-ctl dialog --dismiss                      # dismiss active dialog
+chrome-ctl dialog --auto dismiss                 # auto-dismiss stray popups on this tab (accept|dismiss|off)
+```
+
+- **`hover` & `drag`:** Use trusted CDP mouse events with the same humanized trajectory and `--seed` replay as `click`. Use `hover --snap` to reveal CSS/JS hover menus before clicking child items.
+- **`select <id> <value_or_label>`:** Targets native `<select>` elements, matches by exact `option.value`, exact label, or case-insensitive label, dispatches `input` + `change`, and reports `(verified)`.
+- **`dialog`:** Requires debugger attachment (`Page.enable` is enabled automatically on attach). For unattended background runs, set `chrome-ctl dialog --auto dismiss` so unexpected `alert`/`beforeunload` popups never freeze the tab.
+
 ## Escape hatches (`describe`, `href`, `scroll --to`, `eval`)
 
 `url`, `describe`, `clickat`, and `eval` are deliberate escape hatches — not the default path.

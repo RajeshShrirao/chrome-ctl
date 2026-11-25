@@ -10,17 +10,24 @@ import type {
 import { CAPABILITIES, ErrorCodes, Methods, PROTOCOL_VERSION, TOKEN_KEY, TOKEN_PATTERN } from "../shared/protocol.js";
 import type {
   ActionClickResult,
+  ActionDragResult,
+  ActionHoverResult,
   ActionPressResult,
   ActionScrollResult,
+  ActionSelectResult,
   ActionTypeResult,
   ActionUploadResult,
   ExtensionStatusResult,
   EvalResult,
   FormControlState,
   MediaCaptureResult,
+  CookieItem,
+  PageConsoleResult,
+  PageCookiesResult,
   PageDialogResult,
   PageDownloadsResult,
   PageFormStateResult,
+  PageStorageResult,
   PageNetBlockResult,
   PageNetBodyResult,
   PageNetResult,
@@ -31,6 +38,7 @@ import type {
   RpcResponse,
   SnapElement,
   SnapResult,
+  TabCloseResult,
   TabInfo,
   TabListResult,
   TabOpenResult,
@@ -46,13 +54,17 @@ import {
   RpcFault,
   click,
   clickAt,
+  drag,
+  hover,
   press,
   scroll,
+  selectOption,
   typeText,
   upload,
 } from "./actions.js";
 import { describeCaptureError, stripPngDataUrl } from "./capture.js";
 import * as debuggerController from "./debugger.js";
+import { clearConsole, consoleSnapshot, forgetConsoleTab } from "./consolelog.js";
 import { forgetDialogTab, tracker as dialogTracker } from "./dialogs.js";
 import { listDownloads, waitForDownload } from "./downloads.js";
 import { forgetTab, isNetworkEnabled, noteNavigation, snapshot as netSnapshot, waitForQuiet } from "./netlog.js";
@@ -329,6 +341,7 @@ if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved) {
     lastSnap.delete(tabId);
     forgetTab(tabId);
     forgetDialogTab(tabId);
+    forgetConsoleTab(tabId);
     if (lastOverlayTabId === tabId) {
       lastOverlayTabId = undefined;
     }
@@ -545,16 +558,23 @@ async function handleTabOpen(params: Record<string, unknown>): Promise<TabOpenRe
     typeof params.windowId === "number" ? params.windowId : undefined;
 
   let tab: chrome.tabs.Tab;
+  const requestedTabId = typeof params.tabId === "number" ? params.tabId : undefined;
   if (params.newTab === true) {
     const targetWindow = requestedWindowId ?? (await liveAutomationWindowId());
     const createProperties: chrome.tabs.CreateProperties = {
       url: url.href,
-      active: true,
+      active: requestedTabId === undefined,
     };
     if (targetWindow !== undefined) {
       createProperties.windowId = targetWindow;
     }
     tab = await chrome.tabs.create(createProperties);
+  } else if (requestedTabId !== undefined) {
+    const updated = await chrome.tabs.update(requestedTabId, { url: url.href });
+    if (!updated) {
+      throw new Error(`tab ${requestedTabId} not found`);
+    }
+    tab = updated;
   } else {
     const current = await resolveTab(undefined, requestedWindowId);
     const updated = await chrome.tabs.update(tabIdOf(current), {
@@ -651,6 +671,19 @@ async function handleTabSwitch(params: Record<string, unknown>): Promise<TabSwit
     await writeAutomationWindowId(tab.windowId);
   }
   return { success: true, activeTabId: tabId };
+}
+
+async function handleTabClose(params: Record<string, unknown>): Promise<TabCloseResult> {
+  const tabId = params.tabId;
+  if (typeof tabId !== "number") {
+    throw new Error("tabId is required");
+  }
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch {
+    throw new Error(`tab ${tabId} not found`);
+  }
+  return { success: true, tabId };
 }
 
 function windowSummary(
@@ -1345,6 +1378,161 @@ async function handlePageDialog(params: Record<string, unknown>): Promise<PageDi
   };
 }
 
+async function handlePageConsole(params: Record<string, unknown>): Promise<PageConsoleResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  if (params.clear === true) {
+    clearConsole(tabId);
+    return { entries: [], note: "console log cleared" };
+  }
+  const snap = consoleSnapshot(tabId);
+  const sinceMs =
+    typeof params.sinceMs === "number" && params.sinceMs > 0 ? Math.round(params.sinceMs) : 0;
+  const limit =
+    typeof params.limit === "number" && params.limit > 0
+      ? Math.min(200, Math.round(params.limit))
+      : 50;
+  const cutoff = sinceMs > 0 ? Date.now() - sinceMs : 0;
+
+  let entries = snap.entries;
+  if (cutoff > 0) {
+    entries = entries.filter((e) => e.timestamp >= cutoff);
+  }
+  if (params.errorsOnly === true) {
+    entries = entries.filter((e) => e.level === "error");
+  }
+  if (entries.length > limit) {
+    entries = entries.slice(-limit);
+  }
+  return {
+    entries,
+    ...(snap.enabledAt > 0 ? { enabledAt: snap.enabledAt } : {}),
+    ...(snap.enabledAt === 0
+      ? { note: "collected only while the debugger is attached; run an action or wait --network first" }
+      : {}),
+  };
+}
+
+async function handlePageStorage(params: Record<string, unknown>): Promise<PageStorageResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const area = params.area === "session" ? "session" : "local";
+  const action = typeof params.action === "string" && params.action !== "" ? params.action : "list";
+  const key = typeof params.key === "string" ? params.key : "";
+  const value = typeof params.value === "string" ? params.value : "";
+  const maxChars =
+    typeof params.maxChars === "number" && Number.isFinite(params.maxChars)
+      ? Math.round(params.maxChars)
+      : 200;
+
+  const storeExpr = area === "session" ? "window.sessionStorage" : "window.localStorage";
+  const script = `(() => {
+    const s = ${storeExpr};
+    const action = ${JSON.stringify(action)};
+    const key = ${JSON.stringify(key)};
+    const val = ${JSON.stringify(value)};
+    const maxChars = ${maxChars};
+    const clip = (v) => (maxChars > 0 && v.length > maxChars) ? { value: v.slice(0, maxChars), truncated: true } : { value: v, truncated: false };
+    if (action === "get") {
+      const raw = s.getItem(key);
+      if (raw === null) return { area: ${JSON.stringify(area)}, action, found: false };
+      const c = clip(raw);
+      return { area: ${JSON.stringify(area)}, action, found: true, item: { key, value: c.value, truncated: c.truncated } };
+    }
+    if (action === "set") {
+      s.setItem(key, val);
+      return { area: ${JSON.stringify(area)}, action, found: true, item: { key, value: val } };
+    }
+    if (action === "delete") {
+      const existed = s.getItem(key) !== null;
+      s.removeItem(key);
+      return { area: ${JSON.stringify(area)}, action, found: existed };
+    }
+    if (action === "clear") {
+      const n = s.length;
+      s.clear();
+      return { area: ${JSON.stringify(area)}, action, cleared: n };
+    }
+    const items = [];
+    for (let i = 0; i < s.length; i++) {
+      const k = s.key(i);
+      if (k === null) continue;
+      const c = clip(s.getItem(k) ?? "");
+      items.push({ key: k, value: c.value, truncated: c.truncated });
+    }
+    items.sort((a, b) => a.key.localeCompare(b.key));
+    return { area: ${JSON.stringify(area)}, action: "list", items };
+  })()`;
+
+  const evalRes = await evaluateOnce(tabId, script, false, 5_000);
+  if (evalRes.exceptionDetails) {
+    throw new RpcFault(ErrorCodes.internal, `storage failed: ${evalExceptionText(evalRes)}`);
+  }
+  return (evalRes.result?.value ?? { area, action }) as PageStorageResult;
+}
+
+interface CdpCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: string;
+  expires?: number;
+}
+
+async function handlePageCookies(params: Record<string, unknown>): Promise<PageCookiesResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  await debuggerController.ensureAttached(tabId);
+
+  const action = typeof params.action === "string" && params.action !== "" ? params.action : "list";
+  const targetUrl = typeof params.url === "string" && params.url !== "" ? params.url : (tab.url ?? "");
+
+  if (action === "set") {
+    const name = requireStringParam(params, "name").trim();
+    const value = requireStringParam(params, "value");
+    const domain = typeof params.domain === "string" && params.domain !== "" ? params.domain : undefined;
+    const res = await debuggerController.send<{ success?: boolean }>(tabId, "Network.setCookie", {
+      name,
+      value,
+      ...(domain ? { domain } : { url: targetUrl }),
+    });
+    return { action: "set", success: res?.success !== false };
+  }
+
+  if (action === "delete") {
+    const name = requireStringParam(params, "name").trim();
+    const domain = typeof params.domain === "string" && params.domain !== "" ? params.domain : undefined;
+    await debuggerController.send(tabId, "Network.deleteCookies", {
+      name,
+      ...(domain ? { domain } : { url: targetUrl }),
+    });
+    return { action: "delete", success: true };
+  }
+
+  const res = await debuggerController.send<{ cookies?: CdpCookie[] }>(tabId, "Network.getCookies", {
+    ...(targetUrl ? { urls: [targetUrl] } : {}),
+  });
+  const domainFilter = typeof params.domain === "string" ? params.domain.trim().toLowerCase() : "";
+  const showValues = params.showValues === true;
+  const cookies: CookieItem[] = (res?.cookies ?? [])
+    .filter((c) => domainFilter === "" || c.domain.toLowerCase().includes(domainFilter))
+    .map((c) => ({
+      name: c.name,
+      value: showValues ? c.value : `<redacted:${c.value.length}>`,
+      domain: c.domain,
+      path: c.path,
+      ...(c.secure ? { secure: true } : {}),
+      ...(c.httpOnly ? { httpOnly: true } : {}),
+      ...(c.sameSite ? { sameSite: c.sameSite } : {}),
+      ...(typeof c.expires === "number" && c.expires > 0 ? { expires: c.expires } : {}),
+      ...(!showValues ? { redacted: true } : {}),
+    }));
+  return { action: "list", cookies };
+}
+
 async function handleActionClick(
   params: Record<string, unknown>,
 ): Promise<ActionClickResult> {
@@ -1502,6 +1690,50 @@ async function handleActionUpload(
   await ensureContentScriptInjected(tabId);
 
   return upload(tabId, id, { filePath, sendContent: sendWithIdentity });
+}
+
+async function handleActionHover(params: Record<string, unknown>): Promise<ActionHoverResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const hasId = typeof params.id === "number" && Number.isFinite(params.id) && params.id > 0;
+  const selector = typeof params.selector === "string" && params.selector.trim() !== "" ? params.selector.trim() : undefined;
+  const text = typeof params.text === "string" && params.text.trim() !== "" ? params.text.trim() : undefined;
+  if (!hasId && !selector && !text) {
+    throw new RpcFault(ErrorCodes.internal, "id, selector, or text is required");
+  }
+  await ensureContentScriptInjected(tabId);
+  const query = hasId ? (params.id as number) : { id: 0, selector, text };
+  const result = await hover(tabId, query, {
+    seed: typeof params.seed === "string" ? params.seed : undefined,
+    sendContent: sendWithIdentity,
+  });
+  await attachDiffSnapshot(tab, tabId, params, result);
+  return result;
+}
+
+async function handleActionDrag(params: Record<string, unknown>): Promise<ActionDragResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const fromId = requireNumberParam(params, "fromId");
+  const toId = requireNumberParam(params, "toId");
+  await ensureContentScriptInjected(tabId);
+  const result = await drag(tabId, fromId, toId, {
+    seed: typeof params.seed === "string" ? params.seed : undefined,
+    sendContent: sendWithIdentity,
+  });
+  await attachDiffSnapshot(tab, tabId, params, result);
+  return result;
+}
+
+async function handleActionSelect(params: Record<string, unknown>): Promise<ActionSelectResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const id = requireNumberParam(params, "id");
+  const value = requireStringParam(params, "value");
+  await ensureContentScriptInjected(tabId);
+  const result = await selectOption(tabId, id, value, { sendContent: sendWithIdentity });
+  await attachDiffSnapshot(tab, tabId, params, result);
+  return result;
 }
 
 /**
@@ -1807,6 +2039,8 @@ async function dispatchRpc(id: string, method: string, params: Record<string, un
         return { jsonrpc: "2.0", id, result: await handleTabOpen(params) };
       case Methods.tabSwitch:
         return { jsonrpc: "2.0", id, result: await handleTabSwitch(params) };
+      case Methods.tabClose:
+        return { jsonrpc: "2.0", id, result: await handleTabClose(params) };
       case Methods.pageSnap:
         return { jsonrpc: "2.0", id, result: await handlePageSnap(params) };
       case Methods.pageRead:
@@ -1841,6 +2075,12 @@ async function dispatchRpc(id: string, method: string, params: Record<string, un
         return { jsonrpc: "2.0", id, result: await handlePageDownloads(params) };
       case Methods.pageDialog:
         return { jsonrpc: "2.0", id, result: await handlePageDialog(params) };
+      case Methods.pageConsole:
+        return { jsonrpc: "2.0", id, result: await handlePageConsole(params) };
+      case Methods.pageStorage:
+        return { jsonrpc: "2.0", id, result: await handlePageStorage(params) };
+      case Methods.pageCookies:
+        return { jsonrpc: "2.0", id, result: await handlePageCookies(params) };
       case Methods.authSSO:
         return { jsonrpc: "2.0", id, result: await sso(params) };
       case Methods.actionClick:
@@ -1853,6 +2093,12 @@ async function dispatchRpc(id: string, method: string, params: Record<string, un
         return { jsonrpc: "2.0", id, result: await handleActionScroll(params) };
       case Methods.actionUpload:
         return { jsonrpc: "2.0", id, result: await handleActionUpload(params) };
+      case Methods.actionHover:
+        return { jsonrpc: "2.0", id, result: await handleActionHover(params) };
+      case Methods.actionDrag:
+        return { jsonrpc: "2.0", id, result: await handleActionDrag(params) };
+      case Methods.actionSelect:
+        return { jsonrpc: "2.0", id, result: await handleActionSelect(params) };
       case Methods.mediaCapture:
         return { jsonrpc: "2.0", id, result: await handleMediaCapture(params) };
       default:

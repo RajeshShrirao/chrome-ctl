@@ -62,7 +62,9 @@ chrome-ctl window use <id|focused>          # target an existing window
 chrome-ctl window clear                     # stop targeting a dedicated window
 chrome-ctl window close 12                  # close window (--force overrides focused guard)
 chrome-ctl tabs [--window <id>]             # list open tabs
+chrome-ctl tabs close <tab_id>              # close a specific tab by ID
 chrome-ctl switch <tab_id>                  # switch tab; automation target follows that tab's window
+chrome-ctl --tab <tab_id> <cmd>             # run any page/action/open command on a specific tab without switching focus
 ```
 
 - Never use `window new --foreground`, `window use focused`, or `window close --force` unless the user explicitly asked you to drive their own window — state which window you took, and run `window clear` when done.
@@ -81,23 +83,41 @@ chrome-ctl wait idle                        # DOM quiet + document complete, NOT
 chrome-ctl wait --network                   # no requests in flight & none started for --quiet-ms (500ms)
 chrome-ctl wait --for-text "Saved" --ignore-case
 chrome-ctl wait --network --for-text "Done" --timeout 20000 --quiet-ms 500
+chrome-ctl wait --download --timeout 30000  # wait for next Chrome download to complete (max 60000ms)
+chrome-ctl downloads --limit 10 [--json]    # list recent Chrome downloads with paths, sizes, and states
 ```
 
 - **SPA & long-polling guidance:** SPAs render a shell, go DOM-quiet, then fetch for seconds more — `wait idle` alone routinely returns too early; prefer `--network` or `--for-text` (combinable under one `--timeout`, default `15000` ms, max `30000` ms).
 - **Long-polling cutoff:** `wait --network` automatically excludes pending requests older than 2s (`DEFAULT_LONG_POLL_MS = 2000`) so background chat/streams do not hang forever; for perpetual streams, prefer `--for-text` with an explicit `--timeout`.
 - **0ms / DevTools caveats:** `--network` needs `chrome.debugger`; if DevTools owns the tab, it reports that network events could not be enabled instead of pretending quiet. If `wait --network` prints `WARN: network quiet after 0ms (0 requests observed)`, no traffic was observed — not proof of quiet; verify state. Any `WARN: … State unknown.` is a timeout, never proof the page is static.
 
-### Network inspection (`net`)
+### Network inspection (`net`, `net body`, `net block`)
 
 ```bash
 chrome-ctl net                              # requests seen while debugger attached (limit 50)
+chrome-ctl net --ids --xhr                  # list XHR/Fetch calls with requestId in column 1
 chrome-ctl net --errors --since 5m --limit 50
+chrome-ctl net body <request_id>            # fetch buffered response body (100k char cap; --full or -o <file>)
+chrome-ctl net block --media                # block images/fonts/video via CDP (--pattern <glob>, --clear)
 chrome-ctl net --json                       # raw JSON (PageNetResult) instead of TSV
 ```
 
-- `--errors` filters to network errors or HTTP status `>= 400`. `--since` accepts positive Go durations (`30s`, `5m`).
+- `--errors` filters to network errors or HTTP status `>= 400`. `--since` accepts positive Go durations (`30s`, `5m`). `--ids` prepends `requestId` for `net body`; `--xhr` filters to XHR/Fetch calls.
 - **Attachment scope:** `net` observes only what happened while `chrome.debugger` was attached (roughly during actions and `wait --network`). An empty output with `note: no network data yet…` means nothing was observed, not that the page made zero requests; if DevTools owns the tab, logs cannot be collected.
 - Network entries mirror to extension session storage, surviving service-worker suspension but **not** a Chrome quit.
+
+### Console, storage, cookies, and Side Panel
+
+```bash
+chrome-ctl console [--errors] [--since 5m] [--limit 50] [--clear] [--json]
+chrome-ctl storage [list|get <k>|set <k> <v>|del <k>|clear] [--session] [--full] [--json]
+chrome-ctl cookies [list|set <name> <val>|del <name>] [--domain ...] [--show-values] [--json]
+```
+
+- **`console`:** Captures `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, and `Log.entryAdded` (200-entry per-tab ring) while the debugger is attached.
+- **`storage`:** Targets `localStorage` by default (`--session` for `sessionStorage`), truncating values at 200 chars unless `--full` is passed.
+- **`cookies`:** Uses CDP `Network.getCookies`/`setCookie`/`deleteCookies`. Values are redacted (`<redacted:N>`) by default; pass `--show-values` only when needed.
+- **Extension UI:** The toolbar badge shows live state (`!` disconnected, `||` paused, `RUN` active, `ERR` failure), the automation window displays a subtle border glow (hidden during `shot`/`rec`), and the Chrome Side Panel streams live RPCs with a blocking Pause/Resume gate.
 
 ## Site etiquette and web pitfalls
 
@@ -120,4 +140,4 @@ chrome-ctl net --json                       # raw JSON (PageNetResult) instead o
 | Silent exit `1` | `status` when daemon unreachable, failed `macro run`, and failed `batch` (no `Error:` prefix; read line 2 or stderr detail). |
 | State directory | `${CHROME_CTL_HOME:-~/.chrome-ctl}` (mode `0700`) → `auth_token` (`0600`), `daemon.pid`, `daemon.log`, `media/` (`0600`), `macros/` (`0600`). |
 | Environment | `CHROME_CTL_HOME`, `CHROME_CTL_ADDR` (default `127.0.0.1:9229`), `CHROME_CTL_FFMPEG`. |
-| Defaults & caps | `wait --timeout 15000` (max `30000`), `wait --quiet-ms 500`, `snap --max-elements 400`, `read --max-links 200 --max-tables 10` (plus `--max-chars <n>` / `--full`), `formstate --max-controls <n>` / `--full` / `--filled`, `shot --max-width 1024 --quality 65` (`256–4096`, `1–100`), `eval --timeout 5000` (max `30000`, `100000` char output cap), `type --typo-rate 0.02` (max `2000` chars), `scroll` `0.8` (5s timeout), `sso --timeout 15000` (`1000–60000`), `rec start --fps 2` (`1–2`), `net --limit 50`, `bulk --wait 6000-9000 --min-bytes 300 --max-repeats 3`. |
+| Defaults & caps | `wait --timeout 15000` (max `30000`, or `60000` for `--download`), `wait --quiet-ms 500`, `snap --max-elements 400`, `read --max-links 200 --max-tables 10` (plus `--max-chars <n>` / `--full`), `formstate --max-controls <n>` / `--full` / `--filled`, `shot --max-width 1024 --quality 65` (`256–4096`, `1–100`), `eval --timeout 5000` (max `30000`, `100000` char output cap), `type --typo-rate 0.02` (max `2000` chars), `scroll` `0.8` (5s timeout), `sso --timeout 15000` (`1000–60000`), `rec start --fps 2` (`1–2`), `net --limit 50`, `net body --max-chars 100000`, `console --limit 50`, `storage` `200` char value cap (`--full`), `downloads --limit 10`, `bulk --wait 6000-9000 --min-bytes 300 --max-repeats 3 --concurrency 1` (`1–8`). |

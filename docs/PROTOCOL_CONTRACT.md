@@ -30,6 +30,7 @@
 | `tab.list` | `MethodTabList` | `tabList` | 10000 ms |
 | `tab.open` | `MethodTabOpen` | `tabOpen` | 45000 ms |
 | `tab.switch` | `MethodTabSwitch` | `tabSwitch` | 10000 ms |
+| `tab.close` | `MethodTabClose` | `tabClose` | 10000 ms |
 | `page.snap` | `MethodPageSnap` | `pageSnap` | 10000 ms |
 | `page.read` | `MethodPageRead` | `pageRead` | 10000 ms |
 | `page.wait` | `MethodPageWait` | `pageWait` | 45000 ms |
@@ -40,12 +41,18 @@
 | `page.net_block` | `MethodPageNetBlock` | `pageNetBlock` | 10000 ms |
 | `page.downloads` | `MethodPageDownloads` | `pageDownloads` | 65000 ms |
 | `page.dialog` | `MethodPageDialog` | `pageDialog` | 10000 ms |
+| `page.console` | `MethodPageConsole` | `pageConsole` | 10000 ms |
+| `page.storage` | `MethodPageStorage` | `pageStorage` | 10000 ms |
+| `page.cookies` | `MethodPageCookies` | `pageCookies` | 10000 ms |
 | `page.formstate` | `MethodPageFormState` | `pageFormState` | 10000 ms |
 | `action.click` | `MethodActionClick` | `actionClick` | 60000 ms |
 | `action.type` | `MethodActionType` | `actionType` | 300000 ms |
 | `action.press` | `MethodActionPress` | `actionPress` | 20000 ms |
 | `action.scroll` | `MethodActionScroll` | `actionScroll` | 60000 ms |
 | `action.upload` | `MethodActionUpload` | `actionUpload` | 60000 ms |
+| `action.hover` | `MethodActionHover` | `actionHover` | 60000 ms |
+| `action.drag` | `MethodActionDrag` | `actionDrag` | 60000 ms |
+| `action.select` | `MethodActionSelect` | `actionSelect` | 60000 ms |
 | `media.shot` | `MethodMediaShot` | `mediaShot` | 10000 ms |
 | `media.rec_start` | `MethodMediaRecStart` | `mediaRecStart` | 10000 ms |
 | `media.rec_stop` | `MethodMediaRecStop` | `mediaRecStop` | 10000 ms |
@@ -84,7 +91,7 @@
 | Group | Budget | Methods |
 | :--- | ---: | :--- |
 | `ActionTypeTimeout` | 300000 ms | action.type |
-| `ActionMediumTimeout` | 60000 ms | action.click, action.scroll, action.upload |
+| `ActionMediumTimeout` | 60000 ms | action.click, action.scroll, action.upload, action.hover, action.drag, action.select |
 | `ActionPressTimeout` | 20000 ms | action.press |
 | `PageWaitTimeout` | 45000 ms | page.wait |
 | `PageDownloadTimeout` | 65000 ms | page.downloads |

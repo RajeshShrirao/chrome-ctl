@@ -147,6 +147,7 @@ type TabListResult struct {
 }
 
 type TabOpenParams struct {
+	TabID          *int   `json:"tabId,omitempty"`
 	URL            string `json:"url"`
 	NewTab         bool   `json:"newTab,omitempty"`
 	WindowID       *int   `json:"windowId,omitempty"`
@@ -173,6 +174,15 @@ type TabSwitchParams struct {
 type TabSwitchResult struct {
 	Success     bool `json:"success"`
 	ActiveTabID int  `json:"activeTabId"`
+}
+
+type TabCloseParams struct {
+	TabID int `json:"tabId"`
+}
+
+type TabCloseResult struct {
+	Success bool `json:"success"`
+	TabID   int  `json:"tabId"`
 }
 
 type PageSnapParams struct {
@@ -360,6 +370,57 @@ type ActionUploadResult struct {
 	Success  bool   `json:"success"`
 	FileName string `json:"fileName"`
 	FileSize int64  `json:"fileSize"`
+}
+
+type ActionHoverParams struct {
+	TabID    *int   `json:"tabId,omitempty"`
+	ID       int    `json:"id,omitempty"`
+	Selector string `json:"selector,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Snap     bool   `json:"snap,omitempty"`
+	Seed     string `json:"seed,omitempty"`
+}
+
+type ActionHoverResult struct {
+	Success     bool               `json:"success"`
+	Target      *ActionTarget      `json:"target,omitempty"`
+	Coordinates *ActionCoordinates `json:"coordinates,omitempty"`
+	DurationMs  int                `json:"durationMs"`
+	Seed        string             `json:"seed,omitempty"`
+	Snapshot    *SnapResult        `json:"snapshot,omitempty"`
+}
+
+type ActionDragParams struct {
+	TabID  *int   `json:"tabId,omitempty"`
+	FromID int    `json:"fromId"`
+	ToID   int    `json:"toId"`
+	Snap   bool   `json:"snap,omitempty"`
+	Seed   string `json:"seed,omitempty"`
+}
+
+type ActionDragResult struct {
+	Success    bool          `json:"success"`
+	From       *ActionTarget `json:"from,omitempty"`
+	To         *ActionTarget `json:"to,omitempty"`
+	DurationMs int           `json:"durationMs"`
+	Seed       string        `json:"seed,omitempty"`
+	Snapshot   *SnapResult   `json:"snapshot,omitempty"`
+}
+
+type ActionSelectParams struct {
+	TabID *int   `json:"tabId,omitempty"`
+	ID    int    `json:"id"`
+	Value string `json:"value"`
+	Snap  bool   `json:"snap,omitempty"`
+}
+
+type ActionSelectResult struct {
+	Success  bool        `json:"success"`
+	ID       int         `json:"id"`
+	Value    string      `json:"value"`
+	Label    string      `json:"label,omitempty"`
+	Verified bool        `json:"verified"`
+	Snapshot *SnapResult `json:"snapshot,omitempty"`
 }
 
 type PageWaitParams struct {
@@ -611,6 +672,81 @@ type PageDialogResult struct {
 	Handled bool        `json:"handled,omitempty"`
 	Action  string      `json:"action,omitempty"`
 	Auto    string      `json:"auto,omitempty"`
+}
+
+type ConsoleEntry struct {
+	Level     string `json:"level"`
+	Text      string `json:"text"`
+	Source    string `json:"source,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type PageConsoleParams struct {
+	TabID      *int  `json:"tabId,omitempty"`
+	ErrorsOnly bool  `json:"errorsOnly,omitempty"`
+	Limit      int   `json:"limit,omitempty"`
+	SinceMs    int64 `json:"sinceMs,omitempty"`
+	Clear      bool  `json:"clear,omitempty"`
+}
+
+type PageConsoleResult struct {
+	Entries   []ConsoleEntry `json:"entries"`
+	EnabledAt int64          `json:"enabledAt,omitempty"`
+	Note      string         `json:"note,omitempty"`
+}
+
+type StorageItem struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+type PageStorageParams struct {
+	TabID    *int   `json:"tabId,omitempty"`
+	Area     string `json:"area,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Key      string `json:"key,omitempty"`
+	Value    string `json:"value,omitempty"`
+	MaxChars int    `json:"maxChars,omitempty"`
+}
+
+type PageStorageResult struct {
+	Area    string        `json:"area"`
+	Action  string        `json:"action"`
+	Items   []StorageItem `json:"items,omitempty"`
+	Item    *StorageItem  `json:"item,omitempty"`
+	Found   bool          `json:"found,omitempty"`
+	Cleared int           `json:"cleared,omitempty"`
+}
+
+type CookieItem struct {
+	Name     string  `json:"name"`
+	Value    string  `json:"value"`
+	Domain   string  `json:"domain"`
+	Path     string  `json:"path"`
+	Secure   bool    `json:"secure,omitempty"`
+	HTTPOnly bool    `json:"httpOnly,omitempty"`
+	SameSite string  `json:"sameSite,omitempty"`
+	Expires  float64 `json:"expires,omitempty"`
+	Redacted bool    `json:"redacted,omitempty"`
+}
+
+type PageCookiesParams struct {
+	TabID      *int   `json:"tabId,omitempty"`
+	Action     string `json:"action,omitempty"`
+	Domain     string `json:"domain,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Value      string `json:"value,omitempty"`
+	URL        string `json:"url,omitempty"`
+	ShowValues bool   `json:"showValues,omitempty"`
+}
+
+type PageCookiesResult struct {
+	Action  string       `json:"action"`
+	Cookies []CookieItem `json:"cookies,omitempty"`
+	Success bool         `json:"success,omitempty"`
 }
 
 // MacroTarget is the multi-tier resilient selector captured for an element.
