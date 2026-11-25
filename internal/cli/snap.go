@@ -9,7 +9,7 @@ import (
 )
 
 func newSnapCmd() *cobra.Command {
-	var all, forms, deep, frames bool
+	var all, forms, deep, frames, diff bool
 	var maxElements int
 	cmd := &cobra.Command{
 		Use:   "snap",
@@ -22,6 +22,7 @@ func newSnapCmd() *cobra.Command {
 				Deep:        deep,
 				Frames:      frames,
 				MaxElements: maxElements,
+				Diff:        diff,
 			}
 			var result protocol.SnapResult
 			if err := callRPC(cmd, protocol.MethodPageSnap, params, &result); err != nil {
@@ -36,6 +37,7 @@ func newSnapCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&deep, "deep", false, "Include cursor:pointer controls and bare rows/cells")
 	cmd.Flags().BoolVar(&frames, "frames", false, "Traverse all same-origin frames regardless of size or visibility")
 	cmd.Flags().IntVar(&maxElements, "max-elements", 400, "Cap the number of indexed elements")
+	cmd.Flags().BoolVar(&diff, "diff", false, "Emit only changes since the previous snapshot on this document")
 	return cmd
 }
 
@@ -43,4 +45,13 @@ func newSnapCmd() *cobra.Command {
 // trailing newline.
 func ensureTrailingNewline(text string) string {
 	return strings.TrimRight(text, "\r\n") + "\n"
+}
+
+// appendSnapshot finishes a formatted response line and appends any attached
+// snapshot separated by one blank line.
+func appendSnapshot(prefix string, snap *protocol.SnapResult) string {
+	if snap == nil {
+		return prefix + "\n"
+	}
+	return prefix + "\n\n" + ensureTrailingNewline(snap.FormattedText)
 }

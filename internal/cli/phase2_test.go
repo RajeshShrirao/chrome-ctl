@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
 )
@@ -125,6 +126,31 @@ func TestFormatOpen(t *testing.T) {
 			newTab: true,
 			want:   "OK: opened [3] Slow - https://example.test/slow (still loading)\n",
 		},
+		{
+			name: "wait matched with requests",
+			result: protocol.TabOpenResult{
+				TabID: 4, URL: "https://example.test", Title: "Example", Loaded: true,
+				Wait: &protocol.PageWaitResult{WaitedMs: 1200, Matched: true, Requests: 4},
+			},
+			want: "OK: navigated [4] Example - https://example.test\nOK: wait settled after 1.2s (4 requests)\n",
+		},
+		{
+			name: "wait matched without requests",
+			result: protocol.TabOpenResult{
+				TabID: 4, URL: "https://example.test", Title: "Example", Loaded: true,
+				Wait: &protocol.PageWaitResult{WaitedMs: 300, Matched: true},
+			},
+			want: "OK: navigated [4] Example - https://example.test\nOK: wait settled after 300ms\n",
+		},
+		{
+			name: "wait timed out with snapshot",
+			result: protocol.TabOpenResult{
+				TabID: 4, URL: "https://example.test", Title: "Example", Loaded: true,
+				Wait:     &protocol.PageWaitResult{WaitedMs: 5000, Matched: false, Reason: "timeout"},
+				Snapshot: &protocol.SnapResult{FormattedText: "SNAP 1 | TAB [4] Example | https://example.test\n\n"},
+			},
+			want: "OK: navigated [4] Example - https://example.test\nWARN: open wait timed out after 5.0s; state may still be settling.\n\nSNAP 1 | TAB [4] Example | https://example.test\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -237,8 +263,8 @@ func TestOpenCommand(t *testing.T) {
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		t.Fatalf("decode params: %v", err)
 	}
-	if params.URL != "https://example.test" || params.NewTab {
-		t.Errorf("params = %+v, want trimmed URL and NewTab false", params)
+	if params.URL != "https://example.test" || params.NewTab || params.WaitNetwork || params.WaitText != "" || params.WaitIgnoreCase || params.WaitTimeoutMs != 0 || params.Snap {
+		t.Errorf("params = %+v, want trimmed URL and zero wait/snap flags", params)
 	}
 
 	out, err = executePhase2(t, "open", "https://example.test", "--new")
@@ -254,6 +280,115 @@ func TestOpenCommand(t *testing.T) {
 	}
 	if !params.NewTab {
 		t.Error("params.NewTab = false, want true")
+	}
+}
+
+func TestOpenCommandWithWaitAndSnap(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	requests := make(chan phase2Request, 3)
+
+	t.Run("matched wait and snapshot", func(t *testing.T) {
+		srv := fakePhase2Server(t, token, phase2Result(
+			`{"tabId":7,"url":"https://example.test","title":"Example","loaded":true,`+
+				`"wait":{"waitedMs":1200,"matched":true,"requests":4},`+
+				`"snapshot":{"formattedText":"SNAP 1 | TAB [7] Example | https://example.test\n[1] <button> \"Done\"\n\n"}}`), requests)
+		defer srv.Close()
+		t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+		out, err := executePhase2(t, "open", "https://example.test", "--wait", "--for-text", "Done", "--ignore-case", "--timeout", "5000", "--snap")
+		if err != nil {
+			t.Fatalf("open --wait --snap error = %v", err)
+		}
+		want := "OK: navigated [7] Example - https://example.test\n" +
+			"OK: wait settled after 1.2s (4 requests)\n\n" +
+			"SNAP 1 | TAB [7] Example | https://example.test\n" +
+			"[1] <button> \"Done\"\n"
+		if out != want {
+			t.Errorf("output =\n%q\nwant\n%q", out, want)
+		}
+
+		req := <-requests
+		if req.Method != protocol.MethodTabOpen {
+			t.Errorf("method = %q, want %q", req.Method, protocol.MethodTabOpen)
+		}
+		var params protocol.TabOpenParams
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			t.Fatalf("decode params: %v", err)
+		}
+		if !params.WaitNetwork || params.WaitText != "Done" || !params.WaitIgnoreCase || params.WaitTimeoutMs != 5000 || !params.Snap {
+			t.Errorf("params = %+v, want WaitNetwork, WaitText=Done, WaitIgnoreCase, WaitTimeoutMs=5000, Snap", params)
+		}
+	})
+
+	t.Run("timed out wait WARN and snapshot", func(t *testing.T) {
+		srv := fakePhase2Server(t, token, phase2Result(
+			`{"tabId":7,"url":"https://example.test","title":"Example","loaded":true,`+
+				`"wait":{"waitedMs":5000,"matched":false,"reason":"timeout","inflight":1,"requests":3},`+
+				`"snapshot":{"formattedText":"SNAP 1 | TAB [7] Example | https://example.test\n"}}`), requests)
+		defer srv.Close()
+		t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+		out, err := executePhase2(t, "open", "https://example.test", "--wait", "--for-text", "Done", "--ignore-case", "--timeout", "5000", "--snap")
+		if err != nil {
+			t.Fatalf("open --wait timeout error = %v", err)
+		}
+		want := "OK: navigated [7] Example - https://example.test\n" +
+			"WARN: open wait timed out after 5.0s (1 in flight, 3 requests); state may still be settling.\n\n" +
+			"SNAP 1 | TAB [7] Example | https://example.test\n"
+		if out != want {
+			t.Errorf("output =\n%q\nwant\n%q", out, want)
+		}
+		<-requests
+	})
+
+	t.Run("wait uses default 15000ms timeout", func(t *testing.T) {
+		srv := fakePhase2Server(t, token, phase2Result(
+			`{"tabId":7,"url":"https://example.test","title":"Example","loaded":true,"wait":{"waitedMs":200,"matched":true}}`), requests)
+		defer srv.Close()
+		t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+		out, err := executePhase2(t, "open", "https://example.test", "--wait")
+		if err != nil {
+			t.Fatalf("open --wait error = %v", err)
+		}
+		want := "OK: navigated [7] Example - https://example.test\nOK: wait settled after 200ms\n"
+		if out != want {
+			t.Errorf("output = %q, want %q", out, want)
+		}
+		var params protocol.TabOpenParams
+		if err := json.Unmarshal((<-requests).Params, &params); err != nil {
+			t.Fatalf("decode params: %v", err)
+		}
+		if !params.WaitNetwork || params.WaitTimeoutMs != 15000 || params.WaitIgnoreCase || params.Snap {
+			t.Errorf("params = %+v, want WaitNetwork and WaitTimeoutMs=15000", params)
+		}
+	})
+}
+
+func TestOpenCommandValidationAndTimeoutBudget(t *testing.T) {
+	setupStatusEnv(t)
+	for _, args := range [][]string{
+		{"open", "https://example.test", "--ignore-case"},
+		{"open", "https://example.test", "--for-text", "   "},
+		{"open", "https://example.test", "--wait", "--timeout", "0"},
+		{"open", "https://example.test", "--wait", "--timeout", "30001"},
+	} {
+		if _, err := executePhase2(t, args...); err == nil {
+			t.Errorf("%v error = nil, want validation error", args)
+		}
+	}
+
+	if d, ok := openRPCTimeout(false, false, 15000); ok || d != 0 {
+		t.Errorf("openRPCTimeout(false, false, 15000) = %v, %v; want 0, false", d, ok)
+	}
+	if d, ok := openRPCTimeout(true, true, 5000); !ok || d != 20*time.Second {
+		t.Errorf("openRPCTimeout(true, true, 5000) = %v, %v; want 20s, true", d, ok)
+	}
+	if d, ok := openRPCTimeout(true, false, 30000); !ok || d != 45*time.Second {
+		t.Errorf("openRPCTimeout(true, false, 30000) = %v, %v; want 45s, true", d, ok)
+	}
+	if d, ok := openRPCTimeout(false, true, 15000); !ok || d != 30*time.Second {
+		t.Errorf("openRPCTimeout(false, true, 15000) = %v, %v; want 30s, true", d, ok)
 	}
 }
 
@@ -333,8 +468,38 @@ func TestSnapCommandSingleNewline(t *testing.T) {
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		t.Fatalf("decode params: %v", err)
 	}
-	if params.TabID != nil || !params.All || !params.FormsOnly {
-		t.Errorf("params = %+v, want TabID nil, All and FormsOnly true", params)
+	if params.TabID != nil || !params.All || !params.FormsOnly || params.Diff {
+		t.Errorf("params = %+v, want TabID nil, All and FormsOnly true, Diff false", params)
+	}
+}
+
+func TestSnapCommandDiff(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	requests := make(chan phase2Request, 1)
+	srv := fakePhase2Server(t, token,
+		phase2Result(`{"formattedText":"DIFF 1->2 | TAB [1] Example | https://example.test\n+ [2] <button> \"New\"\n\n"}`), requests)
+	defer srv.Close()
+	t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+	out, err := executePhase2(t, "snap", "--diff")
+	if err != nil {
+		t.Fatalf("snap --diff error = %v", err)
+	}
+	want := "DIFF 1->2 | TAB [1] Example | https://example.test\n+ [2] <button> \"New\"\n"
+	if out != want {
+		t.Errorf("snap --diff output = %q, want %q", out, want)
+	}
+
+	req := <-requests
+	if req.Method != protocol.MethodPageSnap {
+		t.Errorf("method = %q, want %q", req.Method, protocol.MethodPageSnap)
+	}
+	var params protocol.PageSnapParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if !params.Diff {
+		t.Errorf("params.Diff = false, want true (%+v)", params)
 	}
 }
 

@@ -13,12 +13,14 @@ import (
 
 const (
 	scrollTimeout       = 5 * time.Second
+	scrollSnapTimeout   = 20 * time.Second
 	defaultScrollAmount = 0.8
 	maxScrollAmount     = 10
 )
 
 func newScrollCmd() *cobra.Command {
 	var toSelector, seed string
+	var snap bool
 	cmd := &cobra.Command{
 		Use:   "scroll <down|up> [amount] | scroll --to <selector>",
 		Short: "Scroll the page down or up, or jump directly to a selector",
@@ -29,9 +31,14 @@ func newScrollCmd() *cobra.Command {
 				return err
 			}
 			params.Seed = seed
+			params.Snap = snap
 
+			timeout := scrollTimeout
+			if snap {
+				timeout = scrollSnapTimeout
+			}
 			var result protocol.ActionScrollResult
-			if err := callRPCWithTimeout(cmd, protocol.MethodActionScroll, params, &result, scrollTimeout); err != nil {
+			if err := callRPCWithTimeout(cmd, protocol.MethodActionScroll, params, &result, timeout); err != nil {
 				return err
 			}
 			fmt.Fprint(cmd.OutOrStdout(), formatScroll(result, params.Direction))
@@ -40,6 +47,7 @@ func newScrollCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&toSelector, "to", "", "Jump scroll directly to element matching CSS selector")
 	cmd.Flags().StringVar(&seed, "seed", "", "Deterministic seed for scroll ticks and reading pauses")
+	cmd.Flags().BoolVar(&snap, "snap", false, "Include a diff snapshot after scrolling")
 	return cmd
 }
 
@@ -82,12 +90,15 @@ func parseScrollArgs(args []string) (protocol.ActionScrollParams, error) {
 }
 
 func formatScroll(result protocol.ActionScrollResult, direction string) string {
-	if result.Target != "" {
-		return fmt.Sprintf("OK: scrolled to %s\n", result.Target)
+	var line string
+	switch {
+	case result.Target != "":
+		line = fmt.Sprintf("OK: scrolled to %s", result.Target)
+	case result.Frame != "":
+		line = fmt.Sprintf("OK: scrolled frame %s to %dpx", result.Frame, int(math.Round(result.NewScrollY)))
+	default:
+		line = fmt.Sprintf("OK: scrolled %s %dpx to %dpx (%d%%)",
+			direction, int(math.Round(result.ScrolledPixels)), int(math.Round(result.NewScrollY)), int(math.Round(result.ViewportPercent)))
 	}
-	if result.Frame != "" {
-		return fmt.Sprintf("OK: scrolled frame %s to %dpx\n", result.Frame, int(math.Round(result.NewScrollY)))
-	}
-	return fmt.Sprintf("OK: scrolled %s %dpx to %dpx (%d%%)\n",
-		direction, int(math.Round(result.ScrolledPixels)), int(math.Round(result.NewScrollY)), int(math.Round(result.ViewportPercent)))
+	return appendSnapshot(line, result.Snapshot)
 }

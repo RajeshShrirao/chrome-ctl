@@ -32,6 +32,7 @@ var namedKeys = map[string]string{
 func newPressCmd() *cobra.Command {
 	var modifiers []string
 	var seed string
+	var snap bool
 	cmd := &cobra.Command{
 		Use:   "press <key>",
 		Short: "Press a key or key combination",
@@ -46,7 +47,7 @@ func newPressCmd() *cobra.Command {
 				return err
 			}
 
-			params := protocol.ActionPressParams{Key: key, Modifiers: mods, Seed: seed}
+			params := protocol.ActionPressParams{Key: key, Modifiers: mods, Snap: snap, Seed: seed}
 			var result protocol.ActionPressResult
 			if err := callRPCWithTimeout(cmd, protocol.MethodActionPress, params, &result, pressTimeout); err != nil {
 				return err
@@ -57,6 +58,7 @@ func newPressCmd() *cobra.Command {
 	}
 	cmd.Flags().StringArrayVar(&modifiers, "modifier", nil, "Modifier key (ctrl, alt, shift, meta); repeatable")
 	cmd.Flags().StringVar(&seed, "seed", "", "Deterministic seed for key hold time")
+	cmd.Flags().BoolVar(&snap, "snap", false, "Include a diff snapshot after pressing key")
 	return cmd
 }
 
@@ -99,5 +101,5 @@ func formatPress(result protocol.ActionPressResult, modifiers []string) string {
 	parts := make([]string, 0, len(modifiers)+1)
 	parts = append(parts, modifiers...)
 	parts = append(parts, result.Key)
-	return "OK: pressed " + strings.Join(parts, "+") + "\n"
+	return appendSnapshot("OK: pressed "+strings.Join(parts, "+"), result.Snapshot)
 }

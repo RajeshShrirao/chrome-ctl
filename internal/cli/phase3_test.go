@@ -80,6 +80,13 @@ func TestFormatPress(t *testing.T) {
 	if got, want := formatPress(result, []string{"Ctrl", "Shift"}), "OK: pressed Ctrl+Shift+Enter\n"; got != want {
 		t.Errorf("formatPress(mods) = %q, want %q", got, want)
 	}
+
+	withSnap := result
+	withSnap.Snapshot = &protocol.SnapResult{FormattedText: "DIFF 1->2\n+ [5] <button> \"Save\"\n\n"}
+	want := "OK: pressed Enter\n\nDIFF 1->2\n+ [5] <button> \"Save\"\n"
+	if got := formatPress(withSnap, nil); got != want {
+		t.Errorf("formatPress(snapshot) = %q, want %q", got, want)
+	}
 }
 
 func TestFormatScroll(t *testing.T) {
@@ -91,6 +98,21 @@ func TestFormatScroll(t *testing.T) {
 	floatResult := protocol.ActionScrollResult{ScrolledPixels: 719.6, NewScrollY: 720.4, ViewportPercent: 16.8}
 	if got, want := formatScroll(floatResult, "up"), "OK: scrolled up 720px to 720px (17%)\n"; got != want {
 		t.Errorf("formatScroll(floatResult) = %q, want %q", got, want)
+	}
+
+	withSnap := result
+	withSnap.Snapshot = &protocol.SnapResult{FormattedText: "DIFF 1->2\n~ [3] <input> \"Name\"\n\n"}
+	want := "OK: scrolled down 720px to 720px (17%)\n\nDIFF 1->2\n~ [3] <input> \"Name\"\n"
+	if got := formatScroll(withSnap, "down"); got != want {
+		t.Errorf("formatScroll(snapshot) = %q, want %q", got, want)
+	}
+
+	targetSnap := protocol.ActionScrollResult{
+		Target:   "#footer",
+		Snapshot: &protocol.SnapResult{FormattedText: "line1\n"},
+	}
+	if got, want := formatScroll(targetSnap, ""), "OK: scrolled to #footer\n\nline1\n"; got != want {
+		t.Errorf("formatScroll(target+snapshot) = %q, want %q", got, want)
 	}
 }
 
@@ -469,8 +491,38 @@ func TestPressCommand(t *testing.T) {
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		t.Fatalf("decode params: %v", err)
 	}
-	if params.Key != "Enter" || strings.Join(params.Modifiers, ",") != "Ctrl,Shift" {
-		t.Errorf("params = %+v, want Enter with Ctrl,Shift", params)
+	if params.Key != "Enter" || strings.Join(params.Modifiers, ",") != "Ctrl,Shift" || params.Snap {
+		t.Errorf("params = %+v, want Enter with Ctrl,Shift and Snap false", params)
+	}
+}
+
+func TestPressCommandSnap(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	requests := make(chan phase2Request, 1)
+	srv := fakePhase2Server(t, token, phase2Result(
+		`{"success":true,"key":"Enter","snapshot":{"formattedText":"DIFF 1->2\n+ [5] <button> \"Save\"\n\n"}}`), requests)
+	defer srv.Close()
+	t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+	out, err := executePhase2(t, "press", "Enter", "--snap")
+	if err != nil {
+		t.Fatalf("press --snap error = %v", err)
+	}
+	want := "OK: pressed Enter\n\nDIFF 1->2\n+ [5] <button> \"Save\"\n"
+	if out != want {
+		t.Errorf("press --snap output = %q, want %q", out, want)
+	}
+
+	req := <-requests
+	if req.Method != protocol.MethodActionPress {
+		t.Errorf("method = %q, want %q", req.Method, protocol.MethodActionPress)
+	}
+	var params protocol.ActionPressParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if params.Key != "Enter" || !params.Snap {
+		t.Errorf("params = %+v, want Key Enter and Snap true", params)
 	}
 }
 
@@ -508,8 +560,39 @@ func TestScrollCommand(t *testing.T) {
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		t.Fatalf("decode params: %v", err)
 	}
-	if params.Direction != "down" || params.Amount != 0.8 {
-		t.Errorf("params = %+v, want down/0.8", params)
+	if params.Direction != "down" || params.Amount != 0.8 || params.Snap {
+		t.Errorf("params = %+v, want down/0.8 and Snap false", params)
+	}
+}
+
+func TestScrollCommandSnap(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	requests := make(chan phase2Request, 1)
+	srv := fakePhase2Server(t, token, phase2Result(
+		`{"scrolledPixels":720,"newScrollY":720,"viewportPercent":17,`+
+			`"snapshot":{"formattedText":"DIFF 1->2\n~ [3] <input> \"Name\"\n\n"}}`), requests)
+	defer srv.Close()
+	t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+	out, err := executePhase2(t, "scroll", "down", "--snap")
+	if err != nil {
+		t.Fatalf("scroll --snap error = %v", err)
+	}
+	want := "OK: scrolled down 720px to 720px (17%)\n\nDIFF 1->2\n~ [3] <input> \"Name\"\n"
+	if out != want {
+		t.Errorf("scroll --snap output = %q, want %q", out, want)
+	}
+
+	req := <-requests
+	if req.Method != protocol.MethodActionScroll {
+		t.Errorf("method = %q, want %q", req.Method, protocol.MethodActionScroll)
+	}
+	var params protocol.ActionScrollParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if params.Direction != "down" || params.Amount != 0.8 || !params.Snap {
+		t.Errorf("params = %+v, want down/0.8 and Snap true", params)
 	}
 }
 
