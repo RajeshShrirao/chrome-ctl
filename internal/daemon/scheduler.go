@@ -63,6 +63,8 @@ func isMutating(method string) bool {
 		protocol.MethodPageWait,
 		protocol.MethodPageAttr,
 		protocol.MethodPageNet,
+		protocol.MethodPageNetBody,
+		protocol.MethodPageDownloads,
 		protocol.MethodPageFormState,
 		protocol.MethodPageDescribe,
 		protocol.MethodPageResolve,

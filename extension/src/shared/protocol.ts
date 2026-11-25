@@ -485,3 +485,47 @@ export interface PageNetResult {
   enabledAt?: number;
   note?: string;
 }
+
+export interface PageNetBodyResult {
+  requestId: string;
+  body: string;
+  base64Encoded?: boolean;
+  truncated?: boolean;
+  totalBytes?: number;
+}
+
+export interface PageNetBlockResult {
+  patterns: string[];
+}
+
+export interface DownloadItem {
+  id: number;
+  url: string;
+  filename: string;
+  mime?: string;
+  bytes: number;
+  state: string;
+  error?: string;
+  startAt?: number;
+}
+
+export interface PageDownloadsResult {
+  downloads?: DownloadItem[];
+  download?: DownloadItem;
+  matched?: boolean;
+  waitedMs?: number;
+}
+
+export interface DialogInfo {
+  type: string;
+  message: string;
+  defaultPrompt?: string;
+  openedAt?: number;
+}
+
+export interface PageDialogResult {
+  active?: DialogInfo;
+  handled?: boolean;
+  action?: string;
+  auto?: string;
+}

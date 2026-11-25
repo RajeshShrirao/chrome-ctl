@@ -143,6 +143,20 @@ export function summarizeRpc(method: string, params: Record<string, unknown>): s
         : typeof params.windowId === "number"
           ? `win ${params.windowId}`
           : "clear";
+    case "page.net_body":
+      return typeof params.requestId === "string" ? truncate(params.requestId, 24) : "body";
+    case "page.net_block": {
+      const patterns = Array.isArray(params.patterns) ? params.patterns.length : 0;
+      return patterns === 0 ? "clear" : `${patterns} patterns`;
+    }
+    case "page.downloads":
+      return params.wait === true ? "wait" : "list";
+    case "page.dialog":
+      return typeof params.action === "string" && params.action !== ""
+        ? params.action
+        : typeof params.auto === "string" && params.auto !== ""
+          ? `auto=${params.auto}`
+          : "status";
     default:
       return "";
   }

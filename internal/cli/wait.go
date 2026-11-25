@@ -39,6 +39,7 @@ type waitSpec struct {
 
 type waitFlags struct {
 	network    bool
+	download   bool
 	text       string
 	ignoreCase bool
 	timeoutMs  int
@@ -49,13 +50,14 @@ func newWaitCmd() *cobra.Command {
 	var flags waitFlags
 	cmd := &cobra.Command{
 		Use:   "wait [<ms|ms-ms|idle|selector>]",
-		Short: "Wait for a duration, page idle, a selector, body text, or network quiet",
+		Short: "Wait for a duration, page idle, a selector, body text, network quiet, or a download",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWait(cmd, args, flags)
 		},
 	}
 	cmd.Flags().BoolVar(&flags.network, "network", false, "Wait until no requests are in flight and none have started for --quiet-ms")
+	cmd.Flags().BoolVar(&flags.download, "download", false, "Wait for the next browser download to complete")
 	cmd.Flags().StringVar(&flags.text, "for-text", "", "Wait until this text appears in the page body")
 	cmd.Flags().BoolVar(&flags.ignoreCase, "ignore-case", false, "Match --for-text case-insensitively")
 	cmd.Flags().IntVar(&flags.timeoutMs, "timeout", waitNetworkTimeoutMs, "RPC wait deadline in milliseconds")
@@ -65,22 +67,32 @@ func newWaitCmd() *cobra.Command {
 
 func runWait(cmd *cobra.Command, args []string, flags waitFlags) error {
 	flags.text = strings.TrimSpace(flags.text)
-	usesFlags := flags.network || flags.text != ""
+	usesFlags := flags.network || flags.text != "" || flags.download
 
 	if len(args) == 0 && !usesFlags {
-		return errors.New("wait requires a duration, idle, selector, --network, or --for-text")
+		return errors.New("wait requires a duration, idle, selector, --network, --for-text, or --download")
 	}
 	if len(args) > 0 && usesFlags {
-		return errors.New("wait: pass either a positional argument or --network/--for-text, not both")
+		return errors.New("wait: pass either a positional argument or --network/--for-text/--download, not both")
+	}
+	if flags.download && (flags.network || flags.text != "") {
+		return errors.New("wait: --download cannot be combined with --network or --for-text")
 	}
 
-	if flags.timeoutMs <= 0 || flags.timeoutMs > waitMaxRPCms {
-		return fmt.Errorf("invalid --timeout %d: must be between 1 and %d milliseconds", flags.timeoutMs, waitMaxRPCms)
+	maxTimeout := waitMaxRPCms
+	if flags.download {
+		maxTimeout = 60000
+	}
+	if flags.timeoutMs <= 0 || flags.timeoutMs > maxTimeout {
+		return fmt.Errorf("invalid --timeout %d: must be between 1 and %d milliseconds", flags.timeoutMs, maxTimeout)
 	}
 	if flags.quietMs <= 0 || flags.quietMs > waitMaxRPCms {
 		return fmt.Errorf("invalid --quiet-ms %d: must be between 1 and %d milliseconds", flags.quietMs, waitMaxRPCms)
 	}
 
+	if flags.download {
+		return runDownloadWait(cmd, flags)
+	}
 	if usesFlags {
 		return runConditionWait(cmd, flags)
 	}
@@ -176,6 +188,29 @@ func runConditionWait(cmd *cobra.Command, flags waitFlags) error {
 	default:
 		fmt.Fprintf(out, "WARN: text %q did not appear within %s. State unknown.\n", flags.text, duration)
 	}
+	return nil
+}
+
+func runDownloadWait(cmd *cobra.Command, flags waitFlags) error {
+	var result protocol.PageDownloadsResult
+	params := protocol.PageDownloadsParams{
+		Wait:      true,
+		TimeoutMs: flags.timeoutMs,
+	}
+	budget := time.Duration(flags.timeoutMs)*time.Millisecond + 10*time.Second
+	if err := callRPCWithTimeout(cmd, protocol.MethodPageDownloads, params, &result, budget); err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	dur := formatWaitDuration(result.WaitedMs)
+	if result.Matched && result.Download != nil {
+		fmt.Fprintf(out, "OK: downloaded %s (%d bytes, %s)\n", result.Download.Filename, result.Download.Bytes, dur)
+		return nil
+	}
+	if result.Download != nil && result.Download.State == "interrupted" {
+		return fmt.Errorf("download interrupted (%s): %s", orDash(result.Download.Error), result.Download.URL)
+	}
+	fmt.Fprintf(out, "WARN: no download completed within %s. State unknown.\n", dur)
 	return nil
 }
 

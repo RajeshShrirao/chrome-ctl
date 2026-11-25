@@ -36,6 +36,10 @@
 | `page.eval` | `MethodPageEval` | `pageEval` | 35000 ms |
 | `page.attr` | `MethodPageAttr` | `pageAttr` | 10000 ms |
 | `page.net` | `MethodPageNet` | `pageNet` | 10000 ms |
+| `page.net_body` | `MethodPageNetBody` | `pageNetBody` | 10000 ms |
+| `page.net_block` | `MethodPageNetBlock` | `pageNetBlock` | 10000 ms |
+| `page.downloads` | `MethodPageDownloads` | `pageDownloads` | 65000 ms |
+| `page.dialog` | `MethodPageDialog` | `pageDialog` | 10000 ms |
 | `page.formstate` | `MethodPageFormState` | `pageFormState` | 10000 ms |
 | `action.click` | `MethodActionClick` | `actionClick` | 60000 ms |
 | `action.type` | `MethodActionType` | `actionType` | 300000 ms |
@@ -83,6 +87,7 @@
 | `ActionMediumTimeout` | 60000 ms | action.click, action.scroll, action.upload |
 | `ActionPressTimeout` | 20000 ms | action.press |
 | `PageWaitTimeout` | 45000 ms | page.wait |
+| `PageDownloadTimeout` | 65000 ms | page.downloads |
 | `TabOpenTimeout` | 45000 ms | tab.open |
 | `MediaCaptureTimeout` | 30000 ms | media.capture |
 | `PageDescribeTimeout` | 5000 ms | page.describe |

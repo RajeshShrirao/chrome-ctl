@@ -57,6 +57,7 @@ type bulkFlags struct {
 	resume      bool
 	quiet       bool
 	networkWait bool
+	blockMedia  bool
 }
 
 type bulkManifestEntry struct {
@@ -94,6 +95,7 @@ func newBulkCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.resume, "resume", false, "Skip URLs already marked ok in the manifest")
 	cmd.Flags().BoolVar(&flags.quiet, "quiet", false, "Suppress per-item progress on stderr")
 	cmd.Flags().BoolVar(&flags.networkWait, "network", true, "Wait for network quiet after each navigation")
+	cmd.Flags().BoolVar(&flags.blockMedia, "block-media", false, "Block images, fonts, and video via CDP during bulk run")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd
 }
@@ -145,6 +147,14 @@ func runBulk(cmd *cobra.Command, source string, flags bulkFlags) error {
 	var window protocol.WindowResult
 	if err := callRPCWithTimeout(cmd, protocol.MethodWindowEnsure, struct{}{}, &window, bulkTabOpenTimeout); err != nil {
 		return err
+	}
+	if flags.blockMedia {
+		var blocked protocol.PageNetBlockResult
+		if err := callRPC(cmd, protocol.MethodPageNetBlock, protocol.PageNetBlockParams{Patterns: netBlockMediaPatterns}, &blocked); err == nil {
+			defer func() {
+				_ = callRPC(cmd, protocol.MethodPageNetBlock, protocol.PageNetBlockParams{Patterns: []string{}}, &blocked)
+			}()
+		}
 	}
 
 	stdout := cmd.OutOrStdout()

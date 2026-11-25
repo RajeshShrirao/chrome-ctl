@@ -28,6 +28,10 @@ const (
 	MethodPageEval      = "page.eval"
 	MethodPageAttr      = "page.attr"
 	MethodPageNet       = "page.net"
+	MethodPageNetBody   = "page.net_body"
+	MethodPageNetBlock  = "page.net_block"
+	MethodPageDownloads = "page.downloads"
+	MethodPageDialog    = "page.dialog"
 	MethodPageFormState = "page.formstate"
 	MethodActionClick   = "action.click"
 	MethodActionType    = "action.type"
@@ -71,6 +75,7 @@ const (
 	ActionMediumTimeout = 60000 * time.Millisecond
 	ActionPressTimeout  = 20000 * time.Millisecond
 	PageWaitTimeout     = 45000 * time.Millisecond
+	PageDownloadTimeout = 65000 * time.Millisecond
 	TabOpenTimeout      = 45000 * time.Millisecond
 	MediaCaptureTimeout = 30000 * time.Millisecond
 	PageDescribeTimeout = 5000 * time.Millisecond
@@ -91,20 +96,21 @@ var Capabilities = []string{
 }
 
 var methodTimeouts = map[string]time.Duration{
-	"action.type":   ActionTypeTimeout,
-	"action.click":  ActionMediumTimeout,
-	"action.scroll": ActionMediumTimeout,
-	"action.upload": ActionMediumTimeout,
-	"action.press":  ActionPressTimeout,
-	"page.wait":     PageWaitTimeout,
-	"tab.open":      TabOpenTimeout,
-	"media.capture": MediaCaptureTimeout,
-	"page.describe": PageDescribeTimeout,
-	"page.resolve":  PageResolveTimeout,
-	"page.eval":     PageEvalTimeout,
-	"auth.sso":      AuthSSOTimeout,
-	"window.create": WindowCreateTimeout,
-	"window.ensure": WindowCreateTimeout,
+	"action.type":    ActionTypeTimeout,
+	"action.click":   ActionMediumTimeout,
+	"action.scroll":  ActionMediumTimeout,
+	"action.upload":  ActionMediumTimeout,
+	"action.press":   ActionPressTimeout,
+	"page.wait":      PageWaitTimeout,
+	"page.downloads": PageDownloadTimeout,
+	"tab.open":       TabOpenTimeout,
+	"media.capture":  MediaCaptureTimeout,
+	"page.describe":  PageDescribeTimeout,
+	"page.resolve":   PageResolveTimeout,
+	"page.eval":      PageEvalTimeout,
+	"auth.sso":       AuthSSOTimeout,
+	"window.create":  WindowCreateTimeout,
+	"window.ensure":  WindowCreateTimeout,
 }
 
 const DefaultTimeout = 10000 * time.Millisecond

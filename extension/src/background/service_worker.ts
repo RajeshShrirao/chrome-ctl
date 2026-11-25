@@ -18,7 +18,11 @@ import type {
   EvalResult,
   FormControlState,
   MediaCaptureResult,
+  PageDialogResult,
+  PageDownloadsResult,
   PageFormStateResult,
+  PageNetBlockResult,
+  PageNetBodyResult,
   PageNetResult,
   PageReadResult,
   PageAttrResult,
@@ -49,6 +53,8 @@ import {
 } from "./actions.js";
 import { describeCaptureError, stripPngDataUrl } from "./capture.js";
 import * as debuggerController from "./debugger.js";
+import { forgetDialogTab, tracker as dialogTracker } from "./dialogs.js";
+import { listDownloads, waitForDownload } from "./downloads.js";
 import { forgetTab, isNetworkEnabled, noteNavigation, snapshot as netSnapshot, waitForQuiet } from "./netlog.js";
 import { handlePageDescribe, handlePageResolve } from "./resolver.js";
 import type { ResolverDeps } from "./resolver.js";
@@ -322,6 +328,7 @@ if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved) {
   chrome.tabs.onRemoved.addListener((tabId) => {
     lastSnap.delete(tabId);
     forgetTab(tabId);
+    forgetDialogTab(tabId);
     if (lastOverlayTabId === tabId) {
       lastOverlayTabId = undefined;
     }
@@ -1241,6 +1248,103 @@ async function handlePageNet(params: Record<string, unknown>): Promise<PageNetRe
   };
 }
 
+const NET_BODY_DEFAULT_MAX_CHARS = 100_000;
+
+async function handlePageNetBody(params: Record<string, unknown>): Promise<PageNetBodyResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const requestId = requireStringParam(params, "requestId").trim();
+  if (requestId === "") {
+    throw new RpcFault(ErrorCodes.invalidRequest, "requestId is required");
+  }
+  const rawMax = typeof params.maxChars === "number" && Number.isFinite(params.maxChars)
+    ? Math.round(params.maxChars)
+    : NET_BODY_DEFAULT_MAX_CHARS;
+
+  const response = await debuggerController.send<{ body?: string; base64Encoded?: boolean }>(
+    tabId,
+    "Network.getResponseBody",
+    { requestId },
+  );
+  const fullBody = typeof response?.body === "string" ? response.body : "";
+  const base64Encoded = response?.base64Encoded === true;
+  const totalBytes = fullBody.length;
+
+  if (rawMax > 0 && fullBody.length > rawMax) {
+    return {
+      requestId,
+      body: fullBody.slice(0, rawMax),
+      base64Encoded,
+      truncated: true,
+      totalBytes,
+    };
+  }
+  return {
+    requestId,
+    body: fullBody,
+    base64Encoded,
+    totalBytes,
+  };
+}
+
+async function handlePageNetBlock(params: Record<string, unknown>): Promise<PageNetBlockResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  const patterns = Array.isArray(params.patterns)
+    ? params.patterns.filter((v): v is string => typeof v === "string" && v.trim() !== "")
+    : [];
+
+  await debuggerController.ensureAttached(tabId);
+  await debuggerController.send(tabId, "Network.setBlockedURLs", { urls: patterns });
+  return { patterns };
+}
+
+async function handlePageDownloads(params: Record<string, unknown>): Promise<PageDownloadsResult> {
+  if (params.wait === true) {
+    const timeoutMs =
+      typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+        ? params.timeoutMs
+        : 30_000;
+    return waitForDownload(timeoutMs);
+  }
+  const limit =
+    typeof params.limit === "number" && Number.isFinite(params.limit) && params.limit > 0
+      ? params.limit
+      : 10;
+  return listDownloads(limit);
+}
+
+async function handlePageDialog(params: Record<string, unknown>): Promise<PageDialogResult> {
+  const tab = await resolveActionTab(params);
+  const tabId = tabIdOf(tab);
+  await debuggerController.ensureAttached(tabId);
+
+  const autoParam = typeof params.auto === "string" ? params.auto.trim().toLowerCase() : "";
+  if (autoParam === "accept" || autoParam === "dismiss" || autoParam === "off") {
+    dialogTracker.setAuto(tabId, autoParam);
+  }
+
+  const action = typeof params.action === "string" ? params.action.trim().toLowerCase() : "";
+  if (action === "accept" || action === "dismiss") {
+    const promptText = typeof params.promptText === "string" ? params.promptText : undefined;
+    await debuggerController.send(tabId, "Page.handleJavaScriptDialog", {
+      accept: action === "accept",
+      ...(promptText !== undefined ? { promptText } : {}),
+    });
+    dialogTracker.noteClosed(tabId);
+    return {
+      handled: true,
+      action,
+      auto: dialogTracker.getAuto(tabId) ?? "off",
+    };
+  }
+
+  return {
+    active: dialogTracker.getActive(tabId),
+    auto: dialogTracker.getAuto(tabId) ?? "off",
+  };
+}
+
 async function handleActionClick(
   params: Record<string, unknown>,
 ): Promise<ActionClickResult> {
@@ -1729,6 +1833,14 @@ async function dispatchRpc(id: string, method: string, params: Record<string, un
         return { jsonrpc: "2.0", id, result: await handlePageFormState(params) };
       case Methods.pageNet:
         return { jsonrpc: "2.0", id, result: await handlePageNet(params) };
+      case Methods.pageNetBody:
+        return { jsonrpc: "2.0", id, result: await handlePageNetBody(params) };
+      case Methods.pageNetBlock:
+        return { jsonrpc: "2.0", id, result: await handlePageNetBlock(params) };
+      case Methods.pageDownloads:
+        return { jsonrpc: "2.0", id, result: await handlePageDownloads(params) };
+      case Methods.pageDialog:
+        return { jsonrpc: "2.0", id, result: await handlePageDialog(params) };
       case Methods.authSSO:
         return { jsonrpc: "2.0", id, result: await sso(params) };
       case Methods.actionClick:

@@ -31,6 +31,10 @@ export const Methods = {
   pageEval: "page.eval",
   pageAttr: "page.attr",
   pageNet: "page.net",
+  pageNetBody: "page.net_body",
+  pageNetBlock: "page.net_block",
+  pageDownloads: "page.downloads",
+  pageDialog: "page.dialog",
   pageFormState: "page.formstate",
   actionClick: "action.click",
   actionType: "action.type",
@@ -84,6 +88,8 @@ export function rpcTimeoutMs(method: string): number {
       return 20000;
     case Methods.pageWait:
       return 45000;
+    case Methods.pageDownloads:
+      return 65000;
     case Methods.tabOpen:
       return 45000;
     case Methods.mediaCapture:

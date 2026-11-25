@@ -50,6 +50,8 @@ func NewRoot() *cobra.Command {
 		newUploadCmd(),
 		newWaitCmd(),
 		newNetCmd(),
+		newDownloadsCmd(),
+		newDialogCmd(),
 		newBulkCmd(),
 		newShotCmd(),
 		newRecCmd(),

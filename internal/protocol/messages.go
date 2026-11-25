@@ -545,6 +545,74 @@ type PageNetResult struct {
 	Note      string     `json:"note,omitempty"`
 }
 
+type PageNetBodyParams struct {
+	TabID     *int   `json:"tabId,omitempty"`
+	RequestID string `json:"requestId"`
+	MaxChars  int    `json:"maxChars,omitempty"`
+}
+
+type PageNetBodyResult struct {
+	RequestID     string `json:"requestId"`
+	Body          string `json:"body"`
+	Base64Encoded bool   `json:"base64Encoded,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+	TotalBytes    int    `json:"totalBytes,omitempty"`
+}
+
+type PageNetBlockParams struct {
+	TabID    *int     `json:"tabId,omitempty"`
+	Patterns []string `json:"patterns"`
+}
+
+type PageNetBlockResult struct {
+	Patterns []string `json:"patterns"`
+}
+
+type DownloadItem struct {
+	ID       int    `json:"id"`
+	URL      string `json:"url"`
+	Filename string `json:"filename"`
+	Mime     string `json:"mime,omitempty"`
+	Bytes    int64  `json:"bytes"`
+	State    string `json:"state"`
+	Error    string `json:"error,omitempty"`
+	StartAt  int64  `json:"startAt,omitempty"`
+}
+
+type PageDownloadsParams struct {
+	Limit     int  `json:"limit,omitempty"`
+	Wait      bool `json:"wait,omitempty"`
+	TimeoutMs int  `json:"timeoutMs,omitempty"`
+}
+
+type PageDownloadsResult struct {
+	Downloads []DownloadItem `json:"downloads,omitempty"`
+	Download  *DownloadItem  `json:"download,omitempty"`
+	Matched   bool           `json:"matched,omitempty"`
+	WaitedMs  int            `json:"waitedMs,omitempty"`
+}
+
+type DialogInfo struct {
+	Type          string `json:"type"`
+	Message       string `json:"message"`
+	DefaultPrompt string `json:"defaultPrompt,omitempty"`
+	OpenedAt      int64  `json:"openedAt,omitempty"`
+}
+
+type PageDialogParams struct {
+	TabID      *int   `json:"tabId,omitempty"`
+	Action     string `json:"action,omitempty"`
+	PromptText string `json:"promptText,omitempty"`
+	Auto       string `json:"auto,omitempty"`
+}
+
+type PageDialogResult struct {
+	Active  *DialogInfo `json:"active,omitempty"`
+	Handled bool        `json:"handled,omitempty"`
+	Action  string      `json:"action,omitempty"`
+	Auto    string      `json:"auto,omitempty"`
+}
+
 // MacroTarget is the multi-tier resilient selector captured for an element.
 // Tiers are attempted in this order: TestID, Role+AriaLabel, Text, XPath, CSS.
 type MacroTarget struct {

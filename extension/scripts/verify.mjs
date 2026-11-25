@@ -7,6 +7,7 @@ const dist = path.join(root, "dist");
 const REQUIRED_PERMISSIONS = [
   "activeTab",
   "debugger",
+  "downloads",
   "offscreen",
   "scripting",
   "sidePanel",

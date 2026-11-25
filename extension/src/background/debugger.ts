@@ -8,6 +8,7 @@
 
 import { ErrorCodes } from "../shared/protocol.js";
 import { RpcFault, errorText } from "./faults.js";
+import { onDialogDetached, onPageAttached } from "./dialogs.js";
 import { onAttached, onDebuggerDetached } from "./netlog.js";
 
 const PROTOCOL_VERSION = "1.3";
@@ -40,6 +41,7 @@ function installDetachListener(): void {
     if (typeof source.tabId === "number") {
       attached.delete(source.tabId);
       onDebuggerDetached(source.tabId);
+      onDialogDetached(source.tabId);
     }
   });
 }
@@ -73,8 +75,9 @@ export async function ensureAttached(tabId: number): Promise<void> {
   }
 
   attached.add(tabId);
-  // Network observation is best-effort and must not fail the attach.
+  // Network and Page dialog observation are best-effort.
   await onAttached(tabId);
+  await onPageAttached(tabId);
 }
 
 async function sendOnce<T>(
@@ -114,6 +117,7 @@ export async function send<T = Record<string, unknown>>(
 export async function detach(tabId: number): Promise<void> {
   attached.delete(tabId);
   onDebuggerDetached(tabId);
+  onDialogDetached(tabId);
   try {
     await chrome.debugger.detach({ tabId });
   } catch {
