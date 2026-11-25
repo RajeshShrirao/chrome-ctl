@@ -13,6 +13,8 @@ import (
 const (
 	readDefaultMaxTables = 10
 	readDefaultMaxLinks  = 200
+	readDefaultMaxChars  = 20000
+	readHardMaxChars     = 100000
 )
 
 type readFlags struct {
@@ -22,6 +24,8 @@ type readFlags struct {
 	asJSON    bool
 	maxTables int
 	maxLinks  int
+	maxChars  int
+	full      bool
 }
 
 func newReadCmd() *cobra.Command {
@@ -40,6 +44,8 @@ func newReadCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.asJSON, "json", false, "Emit the structured result as JSON")
 	cmd.Flags().IntVar(&flags.maxTables, "max-tables", readDefaultMaxTables, "Maximum tables in --tables mode")
 	cmd.Flags().IntVar(&flags.maxLinks, "max-links", readDefaultMaxLinks, "Maximum links in --links mode")
+	cmd.Flags().IntVar(&flags.maxChars, "max-chars", readDefaultMaxChars, "Maximum characters in markdown output (1-100000)")
+	cmd.Flags().BoolVar(&flags.full, "full", false, "Return up to 100000 characters instead of the 20000 default")
 	return cmd
 }
 
@@ -49,6 +55,16 @@ func runRead(cmd *cobra.Command, args []string, flags readFlags) error {
 	}
 	if flags.maxTables <= 0 || flags.maxLinks <= 0 {
 		return fmt.Errorf("read: --max-tables and --max-links must be positive")
+	}
+	if flags.full && cmd.Flags().Changed("max-chars") {
+		return fmt.Errorf("read: --full and --max-chars are mutually exclusive")
+	}
+	maxChars := flags.maxChars
+	if flags.full {
+		maxChars = readHardMaxChars
+	}
+	if maxChars < 1 || maxChars > readHardMaxChars {
+		return fmt.Errorf("read: --max-chars must be between 1 and %d", readHardMaxChars)
 	}
 
 	params, err := readParams(args)
@@ -64,6 +80,7 @@ func runRead(cmd *cobra.Command, args []string, flags readFlags) error {
 		params.MaxLinks = flags.maxLinks
 	}
 	params.Forms = flags.forms
+	params.MaxChars = maxChars
 
 	var result protocol.PageReadResult
 	if err := callRPC(cmd, protocol.MethodPageRead, params, &result); err != nil {
@@ -83,13 +100,19 @@ func runRead(cmd *cobra.Command, args []string, flags readFlags) error {
 	switch {
 	case flags.tables:
 		fmt.Fprint(out, formatReadTables(result))
+		if result.Truncated {
+			fmt.Fprintln(out, "[truncated]")
+		}
 	case flags.links:
 		fmt.Fprint(out, formatReadLinks(result))
+		if result.Truncated {
+			fmt.Fprintln(out, "[truncated]")
+		}
 	default:
 		fmt.Fprint(out, trimTrailingWhitespace(result.Markdown)+"\n")
-	}
-	if result.Truncated {
-		fmt.Fprintln(out, "[truncated]")
+		if result.Truncated && !strings.HasSuffix(strings.TrimSpace(result.Markdown), "[truncated]") {
+			fmt.Fprintln(out, "[truncated]")
+		}
 	}
 	return nil
 }

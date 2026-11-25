@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/rajeshshrirao/chrome-ctl/internal/protocol"
@@ -81,4 +82,92 @@ func TestReadCommandRejectsConflictingModes(t *testing.T) {
 	if _, err := executePhase2(t, "read", "--tables", "--links"); err == nil {
 		t.Fatal("read --tables --links error = nil, want rejection")
 	}
+}
+
+func TestReadCommandMaxChars(t *testing.T) {
+	_, token := setupStatusEnv(t)
+	requests := make(chan phase2Request, 5)
+	srv := fakePhase2Server(t, token, phase2Result(`{"markdown":"ok"}`), requests)
+	defer srv.Close()
+	t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "default", args: []string{"read"}, want: 20000},
+		{name: "full", args: []string{"read", "--full"}, want: 100000},
+		{name: "custom", args: []string{"read", "--max-chars", "5000"}, want: 5000},
+		{name: "min_bound", args: []string{"read", "--max-chars", "1"}, want: 1},
+		{name: "max_bound", args: []string{"read", "--max-chars", "100000"}, want: 100000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := executePhase2(t, tt.args...); err != nil {
+				t.Fatalf("%v error = %v", tt.args, err)
+			}
+			var params protocol.PageReadParams
+			if err := json.Unmarshal((<-requests).Params, &params); err != nil {
+				t.Fatalf("decode params: %v", err)
+			}
+			if params.MaxChars != tt.want {
+				t.Errorf("params.MaxChars = %d, want %d", params.MaxChars, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadCommandRejectsInvalidMaxChars(t *testing.T) {
+	invalid := [][]string{
+		{"read", "--max-chars", "0"},
+		{"read", "--max-chars", "-1"},
+		{"read", "--max-chars", "100001"},
+		{"read", "--full", "--max-chars", "5000"},
+	}
+	for _, args := range invalid {
+		if _, err := executePhase2(t, args...); err == nil {
+			t.Errorf("%v error = nil, want rejection", args)
+		}
+	}
+}
+
+func TestReadCommandMarkdownTruncationMarker(t *testing.T) {
+	t.Run("no duplicate when markdown already ends with [truncated]", func(t *testing.T) {
+		_, token := setupStatusEnv(t)
+		srv := fakePhase2Server(t, token, phase2Result(
+			`{"markdown":"# Heading\n\nBody\n\n[truncated]","truncated":true}`,
+		), nil)
+		defer srv.Close()
+		t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+		out, err := executePhase2(t, "read")
+		if err != nil {
+			t.Fatalf("read error = %v", err)
+		}
+		if want := "# Heading\n\nBody\n\n[truncated]\n"; out != want {
+			t.Errorf("read output = %q, want %q", out, want)
+		}
+		if count := strings.Count(out, "[truncated]"); count != 1 {
+			t.Errorf("[truncated] count = %d, want 1 (output: %q)", count, out)
+		}
+	})
+
+	t.Run("appends [truncated] when markdown lacks suffix", func(t *testing.T) {
+		_, token := setupStatusEnv(t)
+		srv := fakePhase2Server(t, token, phase2Result(
+			`{"markdown":"# Heading\n\nBody\n","truncated":true}`,
+		), nil)
+		defer srv.Close()
+		t.Setenv("CHROME_CTL_ADDR", addrOf(srv))
+
+		out, err := executePhase2(t, "read")
+		if err != nil {
+			t.Fatalf("read error = %v", err)
+		}
+		if want := "# Heading\n\nBody\n[truncated]\n"; out != want {
+			t.Errorf("read output = %q, want %q", out, want)
+		}
+	})
 }
